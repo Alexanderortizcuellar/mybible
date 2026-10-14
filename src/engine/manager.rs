@@ -161,13 +161,40 @@ impl MyBibleEngine {
 
     fn load_unzipped_module(&mut self, path: &Path, abbrev: &str, mtype: ModuleType) -> Result<()> {
         match mtype {
-            ModuleType::Bible => {
-                let reader = Arc::new(BibleReader::open(path, abbrev)?);
-                if self.active_bible.is_none() {
-                    self.active_bible = Some(abbrev.to_string());
+            ModuleType::Bible => match BibleReader::open(path, abbrev) {
+                Ok(reader) => {
+                    let arc = Arc::new(reader);
+                    if self.active_bible.is_none() {
+                        self.active_bible = Some(abbrev.to_string());
+                    }
+                    self.bibles.insert(abbrev.to_string(), arc);
                 }
-                self.bibles.insert(abbrev.to_string(), reader);
-            }
+                Err(MyBibleError::MissingTable { .. }) => {
+                    if let Ok(c_reader) = CommentaryReader::open(path, abbrev) {
+                        let arc = Arc::new(c_reader);
+                        if self.active_commentary.is_none() {
+                            self.active_commentary = Some(abbrev.to_string());
+                        }
+                        self.commentaries.insert(abbrev.to_string(), arc);
+                    } else if let Ok(d_reader) = DictionaryReader::open(path, abbrev) {
+                        let arc = Arc::new(d_reader);
+                        self.lookup_engine.add_dictionary(arc.clone());
+                        self.dictionaries.insert(abbrev.to_string(), arc);
+                    } else if let Ok(x_reader) = CrossReferenceReader::open(path, abbrev) {
+                        let arc = Arc::new(x_reader);
+                        if self.active_cross_references.is_none() {
+                            self.active_cross_references = Some(abbrev.to_string());
+                        }
+                        self.cross_references.insert(abbrev.to_string(), arc);
+                    } else {
+                        return Err(MyBibleError::MissingTable {
+                            table: "verses".to_string(),
+                            module: abbrev.to_string(),
+                        });
+                    }
+                }
+                Err(e) => return Err(e),
+            },
             ModuleType::Commentaries => {
                 let reader = Arc::new(CommentaryReader::open(path, abbrev)?);
                 if self.active_commentary.is_none() {

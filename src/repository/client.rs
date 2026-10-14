@@ -125,36 +125,71 @@ impl RepositoryClient {
             ))
         })?;
 
-        // Extract the SQLite module from zip
-        let target_filename = entry.target_filename();
-        let target_path = dest.join(&target_filename);
+        // Extract all SQLite modules from zip
+        let mut primary_path = None;
+        let mut extracted_any = false;
 
-        let reader = Cursor::new(zip_bytes);
+        let reader = Cursor::new(&zip_bytes);
         let mut archive = zip::ZipArchive::new(reader)?;
 
-        let mut extracted = false;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let name = file.name().to_string();
+            let raw_name = file.name().to_string();
 
-            // Look for SQLite3 file inside
-            if name.ends_with(".SQLite3") || name.ends_with(".sqlite3") || name.ends_with(".sqlite")
-            {
+            // Extract file name without directories
+            let bname = Path::new(&raw_name)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&raw_name);
+
+            let bname_lower = bname.to_lowercase();
+            if bname_lower.ends_with(".sqlite3") || bname_lower.ends_with(".sqlite") {
+                // Determine target file name based on entry.file_stem and bname
+                let target_name = if bname.eq_ignore_ascii_case(".sqlite3") {
+                    format!("{}.SQLite3", entry.file_stem)
+                } else if bname.starts_with('.') {
+                    // e.g. .commentaries.SQLite3 or .subheadings.SQLite3
+                    let suffix = &bname[..bname.len().saturating_sub(8)]; // e.g. .commentaries
+                    if entry
+                        .file_stem
+                        .to_lowercase()
+                        .ends_with(&suffix.to_lowercase())
+                    {
+                        format!("{}.SQLite3", entry.file_stem)
+                    } else {
+                        format!("{}{}", entry.file_stem, bname)
+                    }
+                } else {
+                    bname.to_string()
+                };
+
+                let target_path = dest.join(&target_name);
                 let mut out_file = File::create(&target_path)?;
                 std::io::copy(&mut file, &mut out_file)?;
-                extracted = true;
-                break;
+                extracted_any = true;
+
+                // Pick primary path: prefer one matching entry.target_filename()
+                if primary_path.is_none()
+                    || target_name.eq_ignore_ascii_case(&entry.target_filename())
+                {
+                    primary_path = Some(target_path);
+                }
             }
         }
 
-        if !extracted {
+        if !extracted_any {
             // Bundle or alternative format: extract all files preserving relative paths
-            let reader = Cursor::new(archive.into_inner().into_inner());
+            let reader = Cursor::new(&zip_bytes);
             let mut archive = zip::ZipArchive::new(reader)?;
             archive.extract(dest)?;
-            return Ok(target_path);
+            return Ok(dest.join(entry.target_filename()));
         }
 
-        Ok(target_path)
+        primary_path.ok_or_else(|| {
+            MyBibleError::InvalidFormat(format!(
+                "No SQLite module database found inside zip for '{}'",
+                entry.abbreviation
+            ))
+        })
     }
 }
