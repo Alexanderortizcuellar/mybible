@@ -1,0 +1,744 @@
+use crate::cli::commands::{Cli, Commands, ConfigCommands, ModulesCommands};
+use crate::cli::config::CliConfig;
+use crate::engine::MyBibleEngine;
+use crate::error::{MyBibleError, Result};
+use crate::parsers::reference::parse_passage_reference;
+use crate::repository::RepositoryClient;
+use crate::terminal::render_to_terminal;
+use colored::*;
+use std::fs;
+use std::path::PathBuf;
+
+pub struct CliRunner {
+    pub cli: Cli,
+    pub config: CliConfig,
+    pub data_dir: PathBuf,
+}
+
+impl CliRunner {
+    pub fn new(cli: Cli) -> Result<Self> {
+        let config = CliConfig::load();
+        let data_dir = CliConfig::resolve_data_dir(cli.data_dir.as_deref())?;
+        Ok(Self {
+            cli,
+            config,
+            data_dir,
+        })
+    }
+
+    pub fn run(mut self) -> Result<()> {
+        let use_color = !self.cli.no_color;
+        let command = self.cli.command.clone();
+
+        match &command {
+            Commands::Config(cfg_cmd) => self.handle_config(cfg_cmd, use_color),
+            Commands::Modules(mod_cmd) => self.handle_modules(mod_cmd, use_color),
+            Commands::Read {
+                reference,
+                bible,
+                footnotes,
+                xrefs,
+            } => self.handle_read(reference, bible.as_deref(), *footnotes, *xrefs, use_color),
+            Commands::Commentary { reference, module } => {
+                self.handle_commentary(reference, module.as_deref(), use_color)
+            }
+            Commands::Dict {
+                term,
+                module,
+                suggest,
+            } => self.handle_dict(term, module.as_deref(), *suggest, use_color),
+            Commands::Xref { reference, preview } => {
+                self.handle_xref(reference, *preview, use_color)
+            }
+            Commands::Plan { plan, day } => self.handle_plan(plan, *day, use_color),
+            Commands::Devotion { module, day } => {
+                self.handle_devotion(module.as_deref(), *day, use_color)
+            }
+        }
+    }
+
+    fn init_engine(&self) -> Result<MyBibleEngine> {
+        let mut engine = MyBibleEngine::new();
+        engine.load_directory(&self.data_dir)?;
+
+        // Apply saved defaults
+        if let Some(def_b) = &self.config.default_bible {
+            if engine.bibles.contains_key(def_b) {
+                engine.active_bible = Some(def_b.clone());
+            }
+        }
+        if let Some(def_c) = &self.config.default_commentary {
+            if engine.commentaries.contains_key(def_c) {
+                engine.active_commentary = Some(def_c.clone());
+            }
+        }
+
+        Ok(engine)
+    }
+
+    // --- READ COMMAND ---
+    fn handle_read(
+        &self,
+        reference_str: &str,
+        bible_arg: Option<&str>,
+        show_footnotes: bool,
+        show_xrefs: bool,
+        use_color: bool,
+    ) -> Result<()> {
+        let engine = self.init_engine()?;
+        let parsed = parse_passage_reference(reference_str)?;
+
+        let bible_key = bible_arg
+            .map(|s| s.to_string())
+            .or_else(|| self.config.default_bible.clone())
+            .or_else(|| engine.active_bible.clone())
+            .or_else(|| engine.bibles.keys().next().cloned())
+            .ok_or_else(|| {
+                MyBibleError::InvalidFormat(
+                    "No Bible modules installed. Run 'mybible modules download <abbrev>' to install one."
+                        .to_string(),
+                )
+            })?;
+
+        let bible = engine
+            .bibles
+            .get(&bible_key)
+            .ok_or_else(|| MyBibleError::ModuleNotFound(bible_key.clone()))?;
+
+        // Print header
+        let header = format!("📖 {} ({})", parsed.display_string(), bible_key);
+        if use_color {
+            println!("\n{}\n", header.bright_cyan().bold());
+        } else {
+            println!("\n{}\n", header);
+        }
+
+        // Determine range of verses to read
+        let (v_start, v_end) = match (parsed.verse_start, parsed.verse_end) {
+            (Some(s), Some(e)) => (s, e),
+            (Some(s), None) => (s, s),
+            (None, _) => {
+                let count = bible.verse_count(parsed.book, parsed.chapter)?;
+                (1, count)
+            }
+        };
+
+        for v in v_start..=v_end {
+            if let Some(verse_rec) = bible.verse(parsed.book, parsed.chapter, v)? {
+                // Verse number
+                let v_label = format!("{:>3} ", v);
+                let text_rendered = render_to_terminal(&verse_rec.text, use_color);
+
+                if use_color {
+                    println!("{} {}", v_label.bright_yellow().bold(), text_rendered);
+                } else {
+                    println!("{} {}", v_label, text_rendered);
+                }
+
+                // Inline Footnotes
+                if show_footnotes {
+                    if let Some(comm_reader) = engine.get_active_commentary() {
+                        if comm_reader.is_footnotes() {
+                            let notes = comm_reader.commentaries_for_verse(
+                                parsed.book,
+                                parsed.chapter,
+                                v,
+                            )?;
+                            for n in notes {
+                                let note_text = render_to_terminal(&n.text, use_color);
+                                let prefix = format!(
+                                    "      ↳ Footnote {}:",
+                                    n.marker.as_deref().unwrap_or("")
+                                );
+                                if use_color {
+                                    println!("{} {}", prefix.dimmed().yellow(), note_text.dimmed());
+                                } else {
+                                    println!("{} {}", prefix, note_text);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Inline Cross References
+                if show_xrefs {
+                    if let Some(xref_name) = &engine.active_cross_references {
+                        if let Some(xref_reader) = engine.cross_references.get(xref_name) {
+                            let refs =
+                                xref_reader.references_for_verse(parsed.book, parsed.chapter, v)?;
+                            if !refs.is_empty() {
+                                let ref_summaries: Vec<String> =
+                                    refs.iter().take(5).map(|r| r.format_target()).collect();
+                                let xref_line =
+                                    format!("      ↳ Cross-refs: {}", ref_summaries.join(", "));
+                                if use_color {
+                                    println!("{}", xref_line.dimmed().cyan());
+                                } else {
+                                    println!("{}", xref_line);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!();
+        Ok(())
+    }
+
+    // --- COMMENTARY COMMAND ---
+    fn handle_commentary(
+        &self,
+        reference_str: &str,
+        module_arg: Option<&str>,
+        use_color: bool,
+    ) -> Result<()> {
+        let engine = self.init_engine()?;
+        let parsed = parse_passage_reference(reference_str)?;
+
+        let comm_key = module_arg
+            .map(|s| s.to_string())
+            .or_else(|| self.config.default_commentary.clone())
+            .or_else(|| engine.active_commentary.clone())
+            .or_else(|| engine.commentaries.keys().next().cloned())
+            .ok_or_else(|| {
+                MyBibleError::InvalidFormat(
+                    "No commentary modules installed. Run 'mybible modules download <abbrev>' to install one."
+                        .to_string(),
+                )
+            })?;
+
+        let comm = engine
+            .commentaries
+            .get(&comm_key)
+            .ok_or_else(|| MyBibleError::ModuleNotFound(comm_key.clone()))?;
+
+        let notes = match parsed.verse_start {
+            Some(v) => comm.commentaries_for_verse(parsed.book, parsed.chapter, v)?,
+            None => comm.commentaries_for_chapter(parsed.book, parsed.chapter)?,
+        };
+
+        let header = format!(
+            "📝 Commentary on {} ({})",
+            parsed.display_string(),
+            comm_key
+        );
+
+        if use_color {
+            println!("\n{}\n", header.bright_magenta().bold());
+        } else {
+            println!("\n{}\n", header);
+        }
+
+        if notes.is_empty() {
+            println!("No commentary notes found for this passage.");
+            return Ok(());
+        }
+
+        for (idx, note) in notes.iter().enumerate() {
+            let range_str = format!(
+                "Note {} [Chapter {}:{} - {}:{}]",
+                idx + 1,
+                note.chapter_number_from,
+                note.verse_number_from,
+                note.chapter_number_to.unwrap_or(note.chapter_number_from),
+                note.verse_number_to.unwrap_or(note.verse_number_from)
+            );
+
+            if use_color {
+                println!("--- {} ---", range_str.bright_cyan().bold());
+            } else {
+                println!("--- {} ---", range_str);
+            }
+
+            let rendered = render_to_terminal(&note.text, use_color);
+            println!("{}\n", rendered);
+        }
+
+        Ok(())
+    }
+
+    // --- DICTIONARY COMMAND ---
+    fn handle_dict(
+        &self,
+        term: &str,
+        module_arg: Option<&str>,
+        suggest: bool,
+        use_color: bool,
+    ) -> Result<()> {
+        let engine = self.init_engine()?;
+
+        let dict_key = module_arg
+            .map(|s| s.to_string())
+            .or_else(|| self.config.default_dictionary.clone())
+            .or_else(|| engine.dictionaries.keys().next().cloned())
+            .ok_or_else(|| {
+                MyBibleError::InvalidFormat(
+                    "No dictionary modules installed. Run 'mybible modules download <abbrev>' to install one."
+                        .to_string(),
+                )
+            })?;
+
+        let dict = engine
+            .dictionaries
+            .get(&dict_key)
+            .ok_or_else(|| MyBibleError::ModuleNotFound(dict_key.clone()))?;
+
+        // 1. Try exact lookup
+        if let Some(topic_rec) = dict.get_topic(term)? {
+            let header = format!("📚 {} — Dictionary ({})", topic_rec.topic, dict_key);
+            if use_color {
+                println!("\n{}\n", header.bright_green().bold());
+            } else {
+                println!("\n{}\n", header);
+            }
+
+            let rendered = render_to_terminal(&topic_rec.definition, use_color);
+            println!("{}\n", rendered);
+            return Ok(());
+        }
+
+        // 2. Not found: suggest topics with same prefix
+        println!("Topic '{}' not found in dictionary '{}'.", term, dict_key);
+
+        if suggest {
+            let prefix = if term.len() >= 3 { &term[..3] } else { term };
+            let suggestions = dict.search_topics_prefix(prefix, 10)?;
+            if !suggestions.is_empty() {
+                println!("\nSimilar topics starting with '{}':", prefix);
+                for s in suggestions {
+                    if use_color {
+                        println!("  • {}", s.bright_yellow());
+                    } else {
+                        println!("  • {}", s);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // --- CROSS REFERENCES COMMAND ---
+    fn handle_xref(&self, reference_str: &str, preview_text: bool, use_color: bool) -> Result<()> {
+        let engine = self.init_engine()?;
+        let parsed = parse_passage_reference(reference_str)?;
+        let verse = parsed.verse_start.unwrap_or(1);
+
+        let xref_key = engine
+            .active_cross_references
+            .clone()
+            .or_else(|| engine.cross_references.keys().next().cloned())
+            .ok_or_else(|| {
+                MyBibleError::InvalidFormat(
+                    "No cross-reference modules installed (e.g. OBX). Run 'mybible modules download OBX' to install."
+                        .to_string(),
+                )
+            })?;
+
+        let xref_reader = engine
+            .cross_references
+            .get(&xref_key)
+            .ok_or_else(|| MyBibleError::ModuleNotFound(xref_key.clone()))?;
+
+        let refs = xref_reader.references_for_verse(parsed.book, parsed.chapter, verse)?;
+
+        let header = format!(
+            "🔗 Cross References for {} {}:{} ({})",
+            parsed.book_name, parsed.chapter, verse, xref_key
+        );
+        if use_color {
+            println!("\n{}\n", header.bright_blue().bold());
+        } else {
+            println!("\n{}\n", header);
+        }
+
+        if refs.is_empty() {
+            println!("No cross-references found for this verse.");
+            return Ok(());
+        }
+
+        let active_bible = engine.get_active_bible();
+
+        for (idx, r) in refs.iter().enumerate() {
+            let votes_str = match r.votes {
+                Some(v) => format!(" ({} votes)", v),
+                None => String::new(),
+            };
+
+            let target_str = format!("{:>2}. {}{}", idx + 1, r.format_target(), votes_str);
+            if use_color {
+                print!("{}", target_str.bright_cyan().bold());
+            } else {
+                print!("{}", target_str);
+            }
+
+            if preview_text {
+                if let Some(b) = &active_bible {
+                    if let Ok(Some(verse_rec)) = b.verse(r.book_to, r.chapter_to, r.verse_to_start)
+                    {
+                        let plain = crate::parsers::verse_text::nodes_to_plain_text(
+                            &crate::parsers::verse_text::parse_verse_text(&verse_rec.text),
+                        );
+                        let clean = plain.trim().replace('\n', " ");
+                        let preview_snippet = if clean.len() > 80 {
+                            format!("{}...", &clean[..80])
+                        } else {
+                            clean
+                        };
+                        if use_color {
+                            println!(" — {}", preview_snippet.dimmed());
+                        } else {
+                            println!(" — {}", preview_snippet);
+                        }
+                        continue;
+                    }
+                }
+            }
+            println!();
+        }
+
+        println!();
+        Ok(())
+    }
+
+    // --- READING PLAN COMMAND ---
+    fn handle_plan(&self, plan_abbrev: &str, day: u32, use_color: bool) -> Result<()> {
+        let engine = self.init_engine()?;
+
+        let plan_reader = engine
+            .reading_plans
+            .get(plan_abbrev)
+            .ok_or_else(|| MyBibleError::ModuleNotFound(plan_abbrev.to_string()))?;
+
+        let max_days = plan_reader.max_days()?;
+        let header = format!(
+            "📅 Reading Plan: {} (Day {} of {})",
+            plan_abbrev, day, max_days
+        );
+
+        if use_color {
+            println!("\n{}\n", header.bright_yellow().bold());
+        } else {
+            println!("\n{}\n", header);
+        }
+
+        let items = plan_reader.items_for_day(day)?;
+        if items.is_empty() {
+            println!("No reading items scheduled for day {}.", day);
+            return Ok(());
+        }
+
+        for (idx, item) in items.iter().enumerate() {
+            let book_name = crate::books::find_book_by_number(item.book_number)
+                .map(|b| b.short_name_eng)
+                .unwrap_or("Book");
+            let range = match (item.start_verse, item.end_verse) {
+                (Some(sv), Some(ev)) if item.start_chapter == item.end_chapter => {
+                    format!("{}:{}-{}", item.start_chapter, sv, ev)
+                }
+                (Some(sv), Some(ev)) => format!(
+                    "{}:{} - {}:{}",
+                    item.start_chapter, sv, item.end_chapter, ev
+                ),
+                (Some(sv), None) => format!("{}:{}", item.start_chapter, sv),
+                (None, _) => format!("Chapter {}", item.start_chapter),
+            };
+            let time_str = if item.evening { " (Evening)" } else { "" };
+            if use_color {
+                println!(
+                    "  {}. {} {}{}",
+                    idx + 1,
+                    book_name.bright_cyan().bold(),
+                    range,
+                    time_str.dimmed()
+                );
+            } else {
+                println!("  {}. {} {}{}", idx + 1, book_name, range, time_str);
+            }
+        }
+        println!();
+        Ok(())
+    }
+
+    // --- DEVOTION COMMAND ---
+    fn handle_devotion(&self, module_arg: Option<&str>, day: u32, use_color: bool) -> Result<()> {
+        let engine = self.init_engine()?;
+
+        let dev_key = module_arg
+            .map(|s| s.to_string())
+            .or_else(|| engine.devotions.keys().next().cloned())
+            .ok_or_else(|| {
+                MyBibleError::InvalidFormat(
+                    "No daily devotional modules installed. Run 'mybible modules download <abbrev>' to install one."
+                        .to_string(),
+                )
+            })?;
+
+        let dev_reader = engine
+            .devotions
+            .get(&dev_key)
+            .ok_or_else(|| MyBibleError::ModuleNotFound(dev_key.clone()))?;
+
+        if let Some(devotion_rec) = dev_reader.devotion_for_day(day)? {
+            let header = format!("🌅 Daily Devotional — Day {} ({})", day, dev_key);
+
+            if use_color {
+                println!("\n{}\n", header.bright_magenta().bold());
+            } else {
+                println!("\n{}\n", header);
+            }
+
+            let rendered = render_to_terminal(&devotion_rec.devotion, use_color);
+            println!("{}\n", rendered);
+        } else {
+            println!("No devotion found for day {} in module {}.", day, dev_key);
+        }
+
+        Ok(())
+    }
+
+    // --- MODULES COMMANDS ---
+    fn handle_modules(&self, cmd: &ModulesCommands, use_color: bool) -> Result<()> {
+        match cmd {
+            ModulesCommands::List => {
+                let engine = self.init_engine()?;
+
+                println!("\n📁 Active Data Directory: {}", self.data_dir.display());
+                println!("==================================================");
+
+                print_module_group("Bibles:", &engine.bibles, use_color);
+                print_module_group("Commentaries & Footnotes:", &engine.commentaries, use_color);
+                print_module_group("Dictionaries:", &engine.dictionaries, use_color);
+                print_module_group("Cross References:", &engine.cross_references, use_color);
+                print_module_group("Subheadings:", &engine.subheadings, use_color);
+                print_module_group("Reading Plans:", &engine.reading_plans, use_color);
+                print_module_group("Devotionals:", &engine.devotions, use_color);
+
+                println!("\nTotal modules loaded: {}\n", engine.total_modules());
+                Ok(())
+            }
+
+            ModulesCommands::Search { query, language } => {
+                let client = RepositoryClient::new();
+                println!("Fetching official module registry from repository...");
+                let registry = client.fetch_official_registry()?;
+
+                let mut results: Vec<_> = registry.search(query);
+                if let Some(lang) = language {
+                    results.retain(|m| m.language.as_deref() == Some(lang));
+                }
+
+                println!("\nFound {} modules matching '{}':\n", results.len(), query);
+                println!(
+                    "{:<16} {:<8} {:<12} {:<8} DESCRIPTION",
+                    "ABBREVIATION", "TYPE", "LANGUAGE", "SIZE"
+                );
+                println!("{}", "-".repeat(80));
+
+                for m in results.iter().take(40) {
+                    let type_str = format!("{:?}", m.module_type());
+                    let lang_str = m.language.as_deref().unwrap_or("-");
+                    let size_str = m.size_str.as_deref().unwrap_or("-");
+                    let desc = if m.description.len() > 40 {
+                        format!("{}...", &m.description[..37])
+                    } else {
+                        m.description.clone()
+                    };
+
+                    if use_color {
+                        println!(
+                            "{:<16} {:<8} {:<12} {:<8} {}",
+                            m.abbreviation.bright_yellow().bold(),
+                            type_str.bright_cyan(),
+                            lang_str,
+                            size_str.dimmed(),
+                            desc
+                        );
+                    } else {
+                        println!(
+                            "{:<16} {:<8} {:<12} {:<8} {}",
+                            m.abbreviation, type_str, lang_str, size_str, desc
+                        );
+                    }
+                }
+
+                if results.len() > 40 {
+                    println!(
+                        "\n... and {} more modules. Refine search query for more specific results.",
+                        results.len() - 40
+                    );
+                }
+                println!();
+                Ok(())
+            }
+
+            ModulesCommands::Download { abbreviation } => {
+                let client = RepositoryClient::new();
+                println!("Connecting to repository...");
+                let registry = client.fetch_official_registry()?;
+
+                let entry = registry
+                    .find_by_abbrev(abbreviation, None)
+                    .ok_or_else(|| {
+                        MyBibleError::InvalidFormat(format!(
+                            "Module '{}' not found in online catalog. Try 'mybible modules search <name>'.",
+                            abbreviation
+                        ))
+                    })?;
+
+                println!(
+                    "Downloading '{}' ({}) - {} ...",
+                    entry.abbreviation,
+                    entry.size_str.as_deref().unwrap_or("?"),
+                    entry.description
+                );
+
+                let extracted_path = client.download_module(entry, &registry, &self.data_dir)?;
+                println!(
+                    "{}",
+                    format!(
+                        "✓ Successfully installed '{}' to {}",
+                        entry.abbreviation,
+                        extracted_path.display()
+                    )
+                    .bright_green()
+                    .bold()
+                );
+                Ok(())
+            }
+
+            ModulesCommands::Delete { abbreviation } => {
+                let mut found = false;
+                for entry in fs::read_dir(&self.data_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                        if file_name.starts_with(abbreviation) {
+                            fs::remove_file(&path)?;
+                            println!("✓ Deleted module file: {}", path.display());
+                            found = true;
+                        }
+                    }
+                }
+                if !found {
+                    println!(
+                        "Module '{}' not found in {}",
+                        abbreviation,
+                        self.data_dir.display()
+                    );
+                }
+                Ok(())
+            }
+
+            ModulesCommands::Info { abbreviation } => {
+                let engine = self.init_engine()?;
+                println!("\nMetadata for module '{}':", abbreviation);
+                println!("----------------------------------------");
+
+                if let Some(b) = engine.bibles.get(abbreviation) {
+                    println!("Type: Bible");
+                    println!("Description: {:?}", b.info().description());
+                    println!("Language: {:?}", b.info().language());
+                    println!("Total Books: {}", b.books()?.len());
+                } else if let Some(c) = engine.commentaries.get(abbreviation) {
+                    println!("Type: Commentary");
+                    println!("Description: {:?}", c.info().description());
+                    println!("Is Footnotes: {}", c.is_footnotes());
+                } else if let Some(d) = engine.dictionaries.get(abbreviation) {
+                    println!("Type: Dictionary");
+                    println!("Description: {:?}", d.info().description());
+                    println!("Dictionary Type: {:?}", d.dictionary_type());
+                } else {
+                    println!("Module '{}' is not loaded or not found.", abbreviation);
+                }
+                println!();
+                Ok(())
+            }
+        }
+    }
+
+    // --- CONFIG COMMANDS ---
+    fn handle_config(&mut self, cmd: &ConfigCommands, _use_color: bool) -> Result<()> {
+        match cmd {
+            ConfigCommands::Get => {
+                println!("\n⚙️ MyBible CLI Configuration");
+                println!("================================");
+                println!("Data Directory:      {}", self.data_dir.display());
+                println!(
+                    "Config File:         {}",
+                    CliConfig::config_file_path().unwrap_or_default().display()
+                );
+                println!(
+                    "Default Bible:       {}",
+                    self.config.default_bible.as_deref().unwrap_or("<none>")
+                );
+                println!(
+                    "Default Commentary:  {}",
+                    self.config
+                        .default_commentary
+                        .as_deref()
+                        .unwrap_or("<none>")
+                );
+                println!(
+                    "Default Dictionary:  {}",
+                    self.config
+                        .default_dictionary
+                        .as_deref()
+                        .unwrap_or("<none>")
+                );
+                println!();
+                Ok(())
+            }
+
+            ConfigCommands::SetDir { path } => {
+                self.config.data_dir = Some(path.display().to_string());
+                self.config.save()?;
+                println!("✓ Updated default data directory to: {}", path.display());
+                Ok(())
+            }
+
+            ConfigCommands::SetBible { abbreviation } => {
+                self.config.default_bible = Some(abbreviation.clone());
+                self.config.save()?;
+                println!("✓ Default Bible set to '{}'", abbreviation);
+                Ok(())
+            }
+
+            ConfigCommands::SetCommentary { abbreviation } => {
+                self.config.default_commentary = Some(abbreviation.clone());
+                self.config.save()?;
+                println!("✓ Default Commentary set to '{}'", abbreviation);
+                Ok(())
+            }
+
+            ConfigCommands::SetDictionary { abbreviation } => {
+                self.config.default_dictionary = Some(abbreviation.clone());
+                self.config.save()?;
+                println!("✓ Default Dictionary set to '{}'", abbreviation);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn print_module_group<V>(
+    title: &str,
+    items: &std::collections::HashMap<String, V>,
+    use_color: bool,
+) {
+    if items.is_empty() {
+        return;
+    }
+    if use_color {
+        println!("\n{}", title.bright_cyan().bold());
+    } else {
+        println!("\n{}", title);
+    }
+    let mut names: Vec<_> = items.keys().collect();
+    names.sort();
+    for k in names {
+        println!("  • {}", k);
+    }
+}
