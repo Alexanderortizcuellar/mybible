@@ -23,6 +23,7 @@ pub mod models;
 pub mod parsers;
 pub mod readers;
 pub mod repository;
+pub mod search;
 pub mod terminal;
 pub mod types;
 
@@ -47,6 +48,9 @@ pub use readers::{
 pub use repository::{
     LanguageDescription, ModuleDownloadEntry, ModuleRegistry, RegistryHost, RepositoryClient,
     OFFICIAL_REGISTRY_URL,
+};
+pub use search::{
+    search_verse_text, MatchSpan, SearchHit, SearchMode, SearchQuery, SearchResults, SearchScope,
 };
 pub use types::{
     BookNumber, DictionaryType, MatchingType, ModuleType, Testament, VerseRange, VerseRef,
@@ -82,6 +86,10 @@ pub mod prelude {
     pub use crate::repository::{
         LanguageDescription, ModuleDownloadEntry, ModuleRegistry, RegistryHost, RepositoryClient,
         OFFICIAL_REGISTRY_URL,
+    };
+    pub use crate::search::{
+        search_verse_text, MatchSpan, SearchHit, SearchMode, SearchQuery, SearchResults,
+        SearchScope,
     };
     pub use crate::types::*;
 }

@@ -6,6 +6,7 @@ use crate::parsers::fragments::FragmentResolver;
 use crate::readers::common::{
     column_exists, open_sqlite_readonly, read_content_fragments, read_info_table, table_exists,
 };
+use crate::search::{SearchHit, SearchQuery, SearchScope};
 use crate::types::{BookNumber, VerseRange};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -446,6 +447,75 @@ impl BibleReader {
             });
         }
         Ok(verses)
+    }
+
+    /// Performs an advanced search across verses in this Bible module based on the given query.
+    pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>> {
+        let (hits, _) = self.search_with_total(query)?;
+        Ok(hits)
+    }
+
+    /// Performs an advanced search and returns both the matching hits (up to query limit)
+    /// and the total count of matching verses found.
+    pub fn search_with_total(&self, query: &SearchQuery) -> Result<(Vec<SearchHit>, usize)> {
+        let conn = self.conn.lock().unwrap();
+
+        let sql = match &query.scope {
+            SearchScope::All => {
+                "SELECT book_number, chapter, verse, text FROM verses ORDER BY book_number, chapter, verse".to_string()
+            }
+            SearchScope::OldTestament => {
+                "SELECT book_number, chapter, verse, text FROM verses WHERE book_number BETWEEN 10 AND 390 ORDER BY book_number, chapter, verse".to_string()
+            }
+            SearchScope::NewTestament => {
+                "SELECT book_number, chapter, verse, text FROM verses WHERE book_number BETWEEN 400 AND 660 ORDER BY book_number, chapter, verse".to_string()
+            }
+            SearchScope::Book(b) => {
+                format!("SELECT book_number, chapter, verse, text FROM verses WHERE book_number = {} ORDER BY chapter, verse", b.0)
+            }
+            SearchScope::BookRange(start, end) => {
+                format!("SELECT book_number, chapter, verse, text FROM verses WHERE book_number BETWEEN {} AND {} ORDER BY book_number, chapter, verse", start, end)
+            }
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+
+        let mut hits = Vec::new();
+        let mut total_matches = 0;
+        let max_limit = query.limit.unwrap_or(usize::MAX);
+
+        while let Some(row) = rows.next()? {
+            let b: u16 = row.get(0)?;
+            let ch: u32 = row.get(1)?;
+            let v: u32 = row.get(2)?;
+            let raw_text: String = row.get(3)?;
+
+            let ast = crate::parsers::verse_text::parse_verse_text(&raw_text);
+            let plain_text = crate::parsers::verse_text::nodes_to_plain_text(&ast);
+
+            if let Some(spans) = crate::search::search_verse_text(&raw_text, &plain_text, query) {
+                total_matches += 1;
+                if hits.len() < max_limit {
+                    let book_name = crate::books::find_book_by_number(BookNumber(b))
+                        .map(|info| info.long_name_eng.to_string())
+                        .unwrap_or_else(|| format!("Book {}", b));
+
+                    hits.push(SearchHit {
+                        bible_module: self.abbreviation.clone(),
+                        book_number: BookNumber(b),
+                        book_name,
+                        chapter: ch,
+                        verse: v,
+                        text: raw_text,
+                        plain_text,
+                        matches: spans,
+                    });
+                }
+            }
+        }
+
+        Ok((hits, total_matches))
     }
 }
 

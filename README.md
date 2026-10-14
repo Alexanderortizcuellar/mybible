@@ -37,6 +37,13 @@ A fast, memory-safe, and thread-safe Rust engine and CLI tool for the **MyBible*
 - **Daily Devotions (`.devotions.SQLite3`)**:
   - Day-by-day devotional text reader.
 
+### 🔎 High-Performance Bible Search Engine
+- **Multi-Module & Cross-Translation**: Search across a single Bible, compare multiple versions in parallel (`--bible NLT,MKJV`), or search all loaded translations (`--all`).
+- **Flexible Modes**: Full support for exact phrases (`"in the beginning"`), boolean AND (`all`), and boolean OR (`any`).
+- **Accents & Diacritics Normalization**: Automatically normalizes accents (e.g. searching `arrepentios` matches `arrepentíos`), case-insensitive by default.
+- **Scope & Testament Filters**: Filter results by Old Testament (`-t ot`), New Testament (`-t nt`), or specific book (`-B Genesis`, `-B Matthew`).
+- **Terminal Highlighting**: Highlights matched keywords in terminal output with ANSI colors or bracketed markers.
+
 ### 🎨 Formatting & Rich Text Engine
 - **HTML & BBCode Parsing**: Translates MyBible HTML formatting tags (`<i>`, `<t>`, `<J>` for words of Jesus, `<S>` for Strong's numbers, `<m>` for morphology) into clean, readable terminal output.
 - **Hyperlinks**: Full parser for `bible://`, `dict://`, and `commentary://` URIs.
@@ -92,6 +99,39 @@ mybible read "Matthew 3:1-15" -f -s KJV-s
 
 # Suppress subheadings
 mybible read "Matthew 3:1-15" --no-subheadings
+```
+
+### Searching the Bible
+Search words, phrases, or Strong's numbers across single, multiple, or all installed Bible translations with automatic match highlighting and accent-insensitivity:
+
+```bash
+# Search for verses containing all words (AND search)
+mybible search "repent kingdom"
+
+# Search in a specific Bible translation
+mybible search "repent kingdom" -b NLT
+
+# Search across multiple translations simultaneously (side-by-side comparison)
+mybible search "repent kingdom" -b NLT,MKJV
+
+# Search across ALL installed Bible translations
+mybible search "Melchizedek" --all
+
+# Exact phrase search (matches contiguous words)
+mybible search -m phrase "holy, holy, holy"
+mybible search '"in the beginning"'
+
+# Filter search to a specific book (e.g. Genesis, Matthew, John)
+mybible search "created" -B Genesis
+
+# Filter search by testament: Old Testament (ot) or New Testament (nt)
+mybible search "glory" -t nt
+
+# Any word search (OR search)
+mybible search "grace mercy peace" -m any
+
+# Set maximum results to display (0 for unlimited)
+mybible search "love" --limit 20
 ```
 
 ### Reading Commentaries & Footnotes

@@ -15,6 +15,7 @@ use crate::readers::file_detector::detect_module_file;
 use crate::readers::reading_plan::ReadingPlanReader;
 use crate::readers::subheading::SubheadingReader;
 use crate::readers::zip_reader::ZipModuleArchive;
+use crate::search::{SearchQuery, SearchResults};
 use crate::types::{BookNumber, ModuleType};
 use std::collections::HashMap;
 use std::fs;
@@ -388,6 +389,85 @@ impl MyBibleEngine {
     pub fn render_html(&self, html: &str, current_module: Option<&str>) -> Result<String> {
         let expanded = expand_fragments(html, current_module, self)?;
         Ok(apply_theme_colors(&expanded, &self.theme))
+    }
+
+    /// Performs an advanced Bible search across one, multiple, or all loaded Bible modules.
+    ///
+    /// - If `modules` is empty: searches the active Bible, or first available Bible if none is active.
+    /// - If `modules` contains "all" or "*": searches all loaded Bibles.
+    /// - Otherwise: searches the specific Bible abbreviations specified in `modules`.
+    pub fn search(&self, query: &SearchQuery, modules: &[&str]) -> Result<SearchResults> {
+        let start = std::time::Instant::now();
+
+        // 1. Resolve which Bible modules to search
+        let target_bibles: Vec<Arc<BibleReader>> = if modules
+            .iter()
+            .any(|&m| m.eq_ignore_ascii_case("all") || m == "*")
+        {
+            let mut list: Vec<_> = self.bibles.values().cloned().collect();
+            list.sort_by(|a, b| a.abbreviation().cmp(b.abbreviation()));
+            list
+        } else if !modules.is_empty() {
+            let mut list = Vec::new();
+            for &m in modules {
+                let trimmed = m.trim();
+                let reader = self.get_bible(trimmed).ok_or_else(|| {
+                    MyBibleError::ModuleNotFound(format!(
+                        "Bible module '{}' is not loaded",
+                        trimmed
+                    ))
+                })?;
+                list.push(reader);
+            }
+            list
+        } else if let Some(active) = self.get_active_bible() {
+            vec![active]
+        } else if let Some(first) = self.bibles.values().next() {
+            vec![first.clone()]
+        } else {
+            return Err(MyBibleError::ModuleNotFound(
+                "No Bible modules are loaded in the engine".to_string(),
+            ));
+        };
+
+        // 2. Perform search across target Bibles
+        let mut all_hits = Vec::new();
+        let mut total_matches = 0;
+        let mut matches_by_module = HashMap::new();
+
+        for bible in &target_bibles {
+            let (hits, count) = bible.search_with_total(query)?;
+            matches_by_module.insert(bible.abbreviation().to_string(), count);
+            total_matches += count;
+            all_hits.extend(hits);
+        }
+
+        // 3. Sort hits in canonical order: (book_number, chapter, verse, bible_module)
+        all_hits.sort_by(|a, b| {
+            a.book_number
+                .0
+                .cmp(&b.book_number.0)
+                .then_with(|| a.chapter.cmp(&b.chapter))
+                .then_with(|| a.verse.cmp(&b.verse))
+                .then_with(|| a.bible_module.cmp(&b.bible_module))
+        });
+
+        // 4. Truncate to limit if specified
+        if let Some(limit) = query.limit {
+            if all_hits.len() > limit {
+                all_hits.truncate(limit);
+            }
+        }
+
+        let duration_ms = start.elapsed().as_millis();
+
+        Ok(SearchResults {
+            query: query.clone(),
+            total_matches,
+            matches_by_module,
+            hits: all_hits,
+            duration_ms,
+        })
     }
 }
 

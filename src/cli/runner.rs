@@ -4,6 +4,7 @@ use crate::engine::MyBibleEngine;
 use crate::error::{MyBibleError, Result};
 use crate::parsers::reference::parse_passage_reference;
 use crate::repository::RepositoryClient;
+use crate::search::{SearchMode, SearchQuery, SearchScope};
 use crate::terminal::{render_subheading, render_to_terminal};
 use colored::*;
 use std::fs;
@@ -47,6 +48,28 @@ impl CliRunner {
                 *xrefs,
                 subheadings.as_deref(),
                 *no_subheadings,
+                use_color,
+            ),
+            Commands::Search {
+                query,
+                bible,
+                all,
+                book,
+                testament,
+                mode,
+                limit,
+                case_sensitive,
+                match_accents,
+            } => self.handle_search(
+                query,
+                bible.as_deref(),
+                *all,
+                book.as_deref(),
+                testament.as_deref(),
+                mode,
+                *limit,
+                *case_sensitive,
+                *match_accents,
                 use_color,
             ),
             Commands::Commentary { reference, module } => {
@@ -244,6 +267,163 @@ impl CliRunner {
         }
 
         println!();
+        Ok(())
+    }
+
+    // --- SEARCH COMMAND ---
+    #[allow(clippy::too_many_arguments)]
+    fn handle_search(
+        &self,
+        query_str: &str,
+        bible_arg: Option<&str>,
+        search_all: bool,
+        book_filter: Option<&str>,
+        testament_filter: Option<&str>,
+        mode_str: &str,
+        limit: usize,
+        case_sensitive: bool,
+        match_accents: bool,
+        use_color: bool,
+    ) -> Result<()> {
+        let engine = self.init_engine()?;
+
+        // 1. Resolve search mode
+        let mode = match mode_str.to_lowercase().as_str() {
+            "phrase" | "exact" => SearchMode::Phrase,
+            "any" | "or" => SearchMode::AnyWord,
+            _ => SearchMode::AllWords,
+        };
+
+        // 2. Resolve scope
+        let scope = if let Some(b_str) = book_filter {
+            let (book_num, _) = crate::parsers::reference::resolve_book(b_str)?;
+            SearchScope::Book(book_num)
+        } else if let Some(t_str) = testament_filter {
+            match t_str.to_lowercase().as_str() {
+                "ot" | "old" => SearchScope::OldTestament,
+                "nt" | "new" => SearchScope::NewTestament,
+                other => {
+                    return Err(MyBibleError::InvalidFormat(format!(
+                        "Invalid testament '{}'. Expected 'ot' or 'nt'",
+                        other
+                    )));
+                }
+            }
+        } else {
+            SearchScope::All
+        };
+
+        // 3. Construct SearchQuery
+        let mut query = SearchQuery::new(query_str)
+            .with_mode(mode)
+            .with_scope(scope)
+            .with_case_sensitive(case_sensitive)
+            .with_ignore_accents(!match_accents);
+
+        if limit > 0 {
+            query = query.with_limit(Some(limit));
+        } else {
+            query = query.with_limit(None);
+        }
+
+        // 4. Resolve target modules
+        let modules_to_search: Vec<&str> = if search_all {
+            vec!["all"]
+        } else if let Some(b_arg) = bible_arg {
+            b_arg
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect()
+        } else {
+            vec![]
+        };
+
+        // 5. Execute search
+        let results = engine.search(&query, &modules_to_search)?;
+
+        // 6. Handle no results
+        if results.total_matches == 0 {
+            let msg = format!("No verses matched query: \"{}\"", query.text);
+            if use_color {
+                println!("\n{}\n", msg.bright_yellow());
+            } else {
+                println!("\n{}\n", msg);
+            }
+            return Ok(());
+        }
+
+        // 7. Print summary header
+        let modules_count = results.matches_by_module.len();
+        let summary_str = if modules_count > 1 {
+            let mut breakdown_items: Vec<_> = results.matches_by_module.iter().collect();
+            breakdown_items.sort_by_key(|&(k, _)| k);
+            let breakdown = breakdown_items
+                .into_iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "🔍 Found {} matching verses for \"{}\" across {} Bible modules ({}) in {}ms:",
+                results.total_matches, query.text, modules_count, breakdown, results.duration_ms
+            )
+        } else {
+            let mod_name = results
+                .matches_by_module
+                .keys()
+                .next()
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            format!(
+                "🔍 Found {} matching verses for \"{}\" in {} in {}ms:",
+                results.total_matches, query.text, mod_name, results.duration_ms
+            )
+        };
+
+        if use_color {
+            println!("\n{}\n", summary_str.bright_cyan().bold());
+        } else {
+            println!("\n{}\n", summary_str);
+        }
+
+        // 8. Print matched verses
+        let is_multi = modules_count > 1;
+        for hit in &results.hits {
+            let ref_str = if is_multi {
+                format!("📖 {} [{}]", hit.format_reference(), hit.bible_module)
+            } else {
+                format!("📖 {} ({})", hit.format_reference(), hit.bible_module)
+            };
+
+            if use_color {
+                println!("  {}", ref_str.bright_yellow().bold());
+            } else {
+                println!("  {}", ref_str);
+            }
+
+            let rendered = hit.render_highlighted(use_color);
+            for line in rendered.lines() {
+                println!("     {}", line.trim_end());
+            }
+            println!();
+        }
+
+        // 9. Truncation notice if limit reached
+        if let Some(_limit_val) = query.limit {
+            if results.total_matches > results.hits.len() {
+                let note = format!(
+                    "ℹ️  Showing first {} of {} matching verses. Use --limit 0 to display all results.",
+                    results.hits.len(),
+                    results.total_matches
+                );
+                if use_color {
+                    println!("  {}\n", note.dimmed().cyan());
+                } else {
+                    println!("  {}\n", note);
+                }
+            }
+        }
+
         Ok(())
     }
 

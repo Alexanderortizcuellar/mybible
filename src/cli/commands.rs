@@ -48,6 +48,45 @@ pub enum Commands {
         no_subheadings: bool,
     },
 
+    /// Search for words, phrases, or Strong's numbers in Bible translations (e.g. 'mybible search "kingdom of God"')
+    #[command(alias = "find", alias = "s")]
+    Search {
+        /// The search query (words or "exact phrase")
+        query: String,
+
+        /// Bible module(s) to search in (e.g. -b NLT or -b NLT,KJV). Defaults to active Bible.
+        #[arg(short = 'b', long = "bible")]
+        bible: Option<String>,
+
+        /// Search across all loaded Bible modules
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+
+        /// Filter search by book name or number (e.g. "Genesis", "John", "430")
+        #[arg(short = 'B', long = "book")]
+        book: Option<String>,
+
+        /// Filter search by testament: "ot" (Old Testament) or "nt" (New Testament)
+        #[arg(short = 't', long = "testament")]
+        testament: Option<String>,
+
+        /// Search mode: "all" (all words), "any" (any word), "phrase" (exact phrase)
+        #[arg(short = 'm', long = "mode", default_value = "all")]
+        mode: String,
+
+        /// Maximum number of search results to display (0 for unlimited)
+        #[arg(short = 'l', long = "limit", default_value_t = 50)]
+        limit: usize,
+
+        /// Match case sensitively (default is case-insensitive)
+        #[arg(long = "case-sensitive")]
+        case_sensitive: bool,
+
+        /// Strict accent matching (default ignores accents/diacritics)
+        #[arg(long = "match-accents")]
+        match_accents: bool,
+    },
+
     /// Read commentary notes for a passage (e.g. 'mybible commentary "Gen 1:1"')
     #[command(alias = "notes", alias = "comm")]
     Commentary {

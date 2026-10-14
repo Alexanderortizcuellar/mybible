@@ -92,7 +92,7 @@ pub fn parse_passage_reference(input: &str) -> Result<ParsedReference> {
 }
 
 /// Resolves a book name, abbreviation, or numeric ID into a canonical BookNumber and display title.
-fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
+pub fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
     let cleaned = name.trim();
 
     // 1. Check if it's already a numeric ID (e.g. "10", "500")
