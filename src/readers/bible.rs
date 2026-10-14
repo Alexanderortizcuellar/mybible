@@ -326,9 +326,13 @@ impl BibleReader {
             return Ok(Vec::new());
         }
         let b = book.into().0;
-        let mut stmt = conn.prepare(
-            "SELECT order_if_several, title FROM stories WHERE book_number = ?1 AND chapter = ?2 AND verse = ?3 ORDER BY order_if_several",
-        )?;
+        let has_order = column_exists(&conn, "stories", "order_if_several")?;
+        let sql = if has_order {
+            "SELECT order_if_several, title FROM stories WHERE book_number = ?1 AND chapter = ?2 AND verse = ?3 ORDER BY order_if_several"
+        } else {
+            "SELECT NULL, title FROM stories WHERE book_number = ?1 AND chapter = ?2 AND verse = ?3"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query([b as u32, chapter, verse])?;
         let mut stories = Vec::new();
         while let Some(row) = rows.next()? {
@@ -356,9 +360,13 @@ impl BibleReader {
             return Ok(Vec::new());
         }
         let b = book.into().0;
-        let mut stmt = conn.prepare(
-            "SELECT verse, order_if_several, title FROM stories WHERE book_number = ?1 AND chapter = ?2 ORDER BY verse, order_if_several",
-        )?;
+        let has_order = column_exists(&conn, "stories", "order_if_several")?;
+        let sql = if has_order {
+            "SELECT verse, order_if_several, title FROM stories WHERE book_number = ?1 AND chapter = ?2 ORDER BY verse, order_if_several"
+        } else {
+            "SELECT verse, NULL, title FROM stories WHERE book_number = ?1 AND chapter = ?2 ORDER BY verse"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query([b as u32, chapter])?;
         let mut stories = Vec::new();
         while let Some(row) = rows.next()? {

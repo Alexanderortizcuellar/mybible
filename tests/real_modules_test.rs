@@ -280,3 +280,37 @@ fn test_real_esv_study_commentaries() {
         .expect("Notes for 1 Chron 10:1");
     assert!(!notes_1chron.is_empty());
 }
+
+#[test]
+fn test_real_kjv_subheadings() {
+    let home = dirs::home_dir().unwrap();
+    let path = home
+        .join(".mybible")
+        .join("modules")
+        .join("KJV-s.subheadings.SQLite3");
+    if !path.exists() {
+        println!("Skipping: KJV-s.subheadings.SQLite3 not found");
+        return;
+    }
+
+    let sub = SubheadingReader::open(&path, "KJV-s").expect("Open KJV-s");
+    println!("=== KJV Subheadings ===");
+    println!("Description: {:?}", sub.info().description());
+
+    let gen_1_subs = sub
+        .subheadings_in_chapter(BookNumber(10), 1)
+        .expect("Subheadings in Gen 1");
+    println!("Gen 1 subheadings count: {}", gen_1_subs.len());
+    for s in &gen_1_subs {
+        println!("Verse {}: {}", s.verse, s.subheading);
+    }
+    assert!(!gen_1_subs.is_empty());
+
+    let matt_3_subs = sub
+        .subheadings_in_chapter(BookNumber(470), 3)
+        .expect("Subheadings in Matt 3");
+    println!("Matt 3 subheadings count: {}", matt_3_subs.len());
+    for s in &matt_3_subs {
+        println!("Verse {}: {}", s.verse, s.subheading);
+    }
+}

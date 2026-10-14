@@ -4,7 +4,7 @@ use crate::engine::MyBibleEngine;
 use crate::error::{MyBibleError, Result};
 use crate::parsers::reference::parse_passage_reference;
 use crate::repository::RepositoryClient;
-use crate::terminal::render_to_terminal;
+use crate::terminal::{render_subheading, render_to_terminal};
 use colored::*;
 use std::fs;
 use std::path::PathBuf;
@@ -38,7 +38,17 @@ impl CliRunner {
                 bible,
                 footnotes,
                 xrefs,
-            } => self.handle_read(reference, bible.as_deref(), *footnotes, *xrefs, use_color),
+                subheadings,
+                no_subheadings,
+            } => self.handle_read(
+                reference,
+                bible.as_deref(),
+                *footnotes,
+                *xrefs,
+                subheadings.as_deref(),
+                *no_subheadings,
+                use_color,
+            ),
             Commands::Commentary { reference, module } => {
                 self.handle_commentary(reference, module.as_deref(), use_color)
             }
@@ -72,20 +82,34 @@ impl CliRunner {
                 engine.active_commentary = Some(def_c.clone());
             }
         }
+        if let Some(def_s) = &self.config.default_subheadings {
+            if engine.subheadings.contains_key(def_s) {
+                engine.active_subheadings = Some(def_s.clone());
+            }
+        } else if engine.active_subheadings.is_none() {
+            engine.active_subheadings = engine.subheadings.keys().next().cloned();
+        }
 
         Ok(engine)
     }
 
     // --- READ COMMAND ---
+    #[allow(clippy::too_many_arguments)]
     fn handle_read(
         &self,
         reference_str: &str,
         bible_arg: Option<&str>,
         show_footnotes: bool,
         show_xrefs: bool,
+        subheadings_arg: Option<&str>,
+        no_subheadings: bool,
         use_color: bool,
     ) -> Result<()> {
-        let engine = self.init_engine()?;
+        let mut engine = self.init_engine()?;
+        if let Some(sub_override) = subheadings_arg {
+            engine.active_subheadings = Some(sub_override.to_string());
+        }
+
         let parsed = parse_passage_reference(reference_str)?;
 
         let bible_key = bible_arg
@@ -124,6 +148,42 @@ impl CliRunner {
         };
 
         for v in v_start..=v_end {
+            // Check for subheadings before this verse
+            if !no_subheadings {
+                let mut subheadings = Vec::new();
+                if let Some(ref sub_name) = engine.active_subheadings {
+                    if let Some(sub_reader) = engine.subheadings.get(sub_name) {
+                        if let Ok(subs) =
+                            sub_reader.subheadings_for_verse(parsed.book, parsed.chapter, v)
+                        {
+                            subheadings = subs;
+                        }
+                    }
+                }
+                if subheadings.is_empty() {
+                    if let Ok(stories) = bible.stories_for_verse(parsed.book, parsed.chapter, v) {
+                        for s in stories {
+                            subheadings.push(crate::models::subheading::SubheadingRecord {
+                                book_number: s.book_number,
+                                chapter: s.chapter,
+                                verse: s.verse,
+                                order_if_several: s.order_if_several,
+                                subheading: s.title,
+                            });
+                        }
+                    }
+                }
+
+                for s in subheadings {
+                    let rendered = render_subheading(&s.subheading, use_color);
+                    if use_color {
+                        println!("\n  ── {} ──\n", rendered.bright_green().bold());
+                    } else {
+                        println!("\n  ── {} ──\n", rendered);
+                    }
+                }
+            }
+
             if let Some(verse_rec) = bible.verse(parsed.book, parsed.chapter, v)? {
                 // Verse number
                 let v_label = format!("{:>3} ", v);
@@ -688,6 +748,13 @@ impl CliRunner {
                         .as_deref()
                         .unwrap_or("<none>")
                 );
+                println!(
+                    "Default Subheadings: {}",
+                    self.config
+                        .default_subheadings
+                        .as_deref()
+                        .unwrap_or("<none>")
+                );
                 println!();
                 Ok(())
             }
@@ -717,6 +784,13 @@ impl CliRunner {
                 self.config.default_dictionary = Some(abbreviation.clone());
                 self.config.save()?;
                 println!("✓ Default Dictionary set to '{}'", abbreviation);
+                Ok(())
+            }
+
+            ConfigCommands::SetSubheadings { abbreviation } => {
+                self.config.default_subheadings = Some(abbreviation.clone());
+                self.config.save()?;
+                println!("✓ Default Subheadings set to '{}'", abbreviation);
                 Ok(())
             }
         }

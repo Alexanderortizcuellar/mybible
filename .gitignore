@@ -3,5 +3,6 @@ modules/
 cache/
 **/*.rs.bk
 *.pdb
+*.exe
 *.SQLite3-journal
 *.db-journal

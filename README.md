@@ -28,6 +28,10 @@ A fast, memory-safe, and thread-safe Rust engine and CLI tool for the **MyBible*
   - Multi-form word normalization algorithms (Form 0, Form 1, Form 2 with diacritics removal and Russian/Greek normalization).
 - **Cross-References (`.crossreferences.SQLite3`)**:
   - Forward and reverse reference mapping with vote-based ranking and deduplication.
+- **Subheadings / Pericopes (`.subheadings.SQLite3`)**:
+  - Independent pericope titles (e.g. `KJV-s`, `RV60-s`) that overlay across any Bible translation.
+  - Native fallback to the Bible's embedded `stories` table when standalone subheadings modules are not loaded.
+  - Clean extraction and formatting of parallel passage tags (`<x>...</x>`).
 - **Reading Plans (`.plan.SQLite3`)**:
   - Daily morning and evening reading schedules.
 - **Daily Devotions (`.devotions.SQLite3`)**:
@@ -77,14 +81,17 @@ cargo install --path .
 # Read a single verse
 mybible read "John 3:16"
 
-# Read a passage range
-mybible read "Genesis 1:1-5"
+# Read a passage range (automatically renders section headings)
+mybible read "Matthew 3:1-15"
 
 # Specify a specific Bible version
-mybible read "Rom 8:28" --bible NLT
+mybible read "Rom 8:28" -b NLT
 
-# Include commentary, cross-references, and Strong's numbers in the output
-mybible read "Jn 1:1" --with-commentary --with-crossrefs --strong
+# Include footnotes (-f), cross-references (-x), or pick a specific subheadings pericope module (-s)
+mybible read "Matthew 3:1-15" -f -s KJV-s
+
+# Suppress subheadings
+mybible read "Matthew 3:1-15" --no-subheadings
 ```
 
 ### Reading Commentaries & Footnotes
@@ -93,7 +100,7 @@ mybible read "Jn 1:1" --with-commentary --with-crossrefs --strong
 mybible commentary "Romans 8:28"
 
 # Read commentary using a specific module
-mybible commentary "1 John 1:9" --commentary ESVstudy
+mybible commentary "1 John 1:9" -m ESVstudy
 ```
 
 ### Looking Up Dictionaries & Strong's Concordance
@@ -137,18 +144,19 @@ mybible modules info "NLT"
 ```
 
 ### Configuration
-`mybible` saves configuration settings to `~/.mybible/config.toml` (or `%APPDATA%\mybible\config.toml` on Windows).
+`mybible` saves configuration settings to `~/.mybible/config.json`.
 
 ```bash
 # View active configuration and paths
-mybible config
+mybible config show
 
 # Set the default directory where modules are stored
-mybible config --set-dir "C:/path/to/my/modules"
+mybible config set-dir "C:/path/to/my/modules"
 
 # Set default active modules
-mybible config --set-bible NLT
-mybible config --set-commentary ESVstudy
+mybible config set-bible NLT
+mybible config set-commentary ESVstudy
+mybible config set-subheadings KJV-s
 ```
 
 ---

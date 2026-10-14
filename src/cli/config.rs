@@ -10,6 +10,7 @@ pub struct CliConfig {
     pub default_bible: Option<String>,
     pub default_commentary: Option<String>,
     pub default_dictionary: Option<String>,
+    pub default_subheadings: Option<String>,
 }
 
 impl CliConfig {

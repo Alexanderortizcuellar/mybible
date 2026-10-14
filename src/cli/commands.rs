@@ -38,6 +38,14 @@ pub enum Commands {
         /// Display cross-references below verses
         #[arg(long = "xrefs")]
         xrefs: bool,
+
+        /// Subheadings module to use (defaults to active subheadings module or embedded stories)
+        #[arg(short = 's', long = "subheadings")]
+        subheadings: Option<String>,
+
+        /// Disable section subheadings
+        #[arg(long = "no-subheadings")]
+        no_subheadings: bool,
     },
 
     /// Read commentary notes for a passage (e.g. 'mybible commentary "Gen 1:1"')
@@ -157,4 +165,7 @@ pub enum ConfigCommands {
 
     /// Set default Dictionary
     SetDictionary { abbreviation: String },
+
+    /// Set default Subheadings module
+    SetSubheadings { abbreviation: String },
 }

@@ -1,7 +1,7 @@
 use crate::error::{MyBibleError, Result};
 use crate::metadata::InfoTable;
 use crate::models::subheading::SubheadingRecord;
-use crate::readers::common::{open_sqlite_readonly, read_info_table, table_exists};
+use crate::readers::common::{column_exists, open_sqlite_readonly, read_info_table, table_exists};
 use crate::types::BookNumber;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -65,9 +65,13 @@ impl SubheadingReader {
     ) -> Result<Vec<SubheadingRecord>> {
         let b = book.into().0;
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT order_if_several, subheading FROM subheadings WHERE book_number = ?1 AND chapter = ?2 AND verse = ?3 ORDER BY order_if_several",
-        )?;
+        let has_order = column_exists(&conn, "subheadings", "order_if_several")?;
+        let sql = if has_order {
+            "SELECT order_if_several, subheading FROM subheadings WHERE book_number = ?1 AND chapter = ?2 AND verse = ?3 ORDER BY order_if_several"
+        } else {
+            "SELECT NULL, subheading FROM subheadings WHERE book_number = ?1 AND chapter = ?2 AND verse = ?3"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query([b as u32, chapter, verse])?;
         let mut list = Vec::new();
 
@@ -94,9 +98,13 @@ impl SubheadingReader {
     ) -> Result<Vec<SubheadingRecord>> {
         let b = book.into().0;
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT verse, order_if_several, subheading FROM subheadings WHERE book_number = ?1 AND chapter = ?2 ORDER BY verse, order_if_several",
-        )?;
+        let has_order = column_exists(&conn, "subheadings", "order_if_several")?;
+        let sql = if has_order {
+            "SELECT verse, order_if_several, subheading FROM subheadings WHERE book_number = ?1 AND chapter = ?2 ORDER BY verse, order_if_several"
+        } else {
+            "SELECT verse, NULL, subheading FROM subheadings WHERE book_number = ?1 AND chapter = ?2 ORDER BY verse"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query([b as u32, chapter])?;
         let mut list = Vec::new();
 
