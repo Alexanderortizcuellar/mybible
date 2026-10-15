@@ -56,14 +56,22 @@ A fast, memory-safe, and thread-safe Rust engine and CLI tool for the **MyBible*
 - One-command download, ZIP extraction, and automatic directory placement.
 
 ### 🖥️ Native Desktop GUI (PySide6)
-- **Zero-Bloat Native Interface**: Built with lightweight `QTextBrowser` widgets (no heavy Chromium/WebEngine).
-- **Three-Pane Study Workspace**:
-  - Left: Book & chapter navigation tree with testament grouping and chapter counts.
-  - Center: Rich-text Scripture reader with Red Letter words of Jesus, pericope headings, and inline hyperlinks.
-  - Right: Synchronized multi-tab inspector displaying chapter commentaries, cross-references, and full Strong's concordance / dictionary articles.
-- **Interactive Links**: Click footnotes (`[1]`), Strong numbers (`G26`), cross-references (`🔗 Rom 8:28`), and verse references to jump instantly.
-- **Theming & Typography**: Light, Sepia, and Dark reading themes with dynamic font scaling (`Ctrl +` / `Ctrl -`).
-- **Interactive Search & Module Manager**: Dedicated dialogs for multi-translation searching and downloading new modules directly into your active library.
+- **Zero-Bloat Native Interface**: Built with lightweight Qt `QTextBrowser` and native dock widgets (no heavy Chromium/WebEngine overhead).
+- **Flexible Dock-Based Study Workspace**:
+  - **📖 Books & Navigation**: Tree-based Bible navigator with testament filtering and chapter indicators.
+  - **Scripture Reader**: High-performance reader featuring Red Letter words of Jesus, overlay pericopes / subheadings, Strong numbers, and interactive links.
+  - **➕ Parallel Bible Panels**: Dynamically open multiple parallel Bible reader panels to study different translations side-by-side.
+  - **⚖️ Parallel Comparison Dock**: Bottom dock comparing multiple translations verse-by-verse with quick toggle checkboxes.
+  - **📝 Commentary & Footnotes**: Clean verse-grouped commentary reader with book and chapter introduction parsing (`v_from = 0`).
+  - **🔗 Cross-References**: Forward and reverse reference mapping with instant scripture text previews.
+  - **📚 Dictionary & Concordance**: Multi-dictionary lookup and Strong's Concordance integration with automatic fallback.
+  - **🌅 Daily Devotional Dock**: Day-by-day devotional reader (Days 1–366) with day navigation, "Today" jump, and interactive Scripture preview links.
+  - **📝 Personal Study Notes Dock**: Chapter-bound personal notes with debounced auto-save to a persistent local SQLite database (`modules/user_notes.db`) and a searchable notebook browser to filter and jump across notes.
+- **Interactive Tooltips & Lookups**:
+  - Hover tooltips displaying instant scripture previews when hovering over biblical references in commentaries, cross-references, or devotions.
+  - Double-click any word in the reader, commentary, comparison, or devotion dock to look it up in the active dictionary.
+- **Theming & Typography**: Native Light, Sepia (reading), and Dark (night) palettes with synchronized stylesheets and dynamic font zoom controls (`A+` / `A-` / `Ctrl +` / `Ctrl -`).
+- **Integrated Module Manager & Search Dialogs**: Multi-translation full-text search with keyword highlighting, and direct in-app downloader connecting to the official 4,000+ module repository.
 
 ### ⚡ Thread-Safe Architecture (`Send + Sync`)
 All readers wrap SQLite connections safely in synchronization primitives, making [`MyBibleEngine`](src/engine/manager.rs) fully `Send + Sync`. It is ready to be embedded directly into multi-threaded backends or desktop GUI frameworks such as **Tauri**, **Slint**, or **Iced**.

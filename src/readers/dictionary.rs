@@ -35,6 +35,13 @@ impl DictionaryReader {
         path: Option<PathBuf>,
         abbreviation: &str,
     ) -> Result<Self> {
+        if !table_exists(&conn, "dictionary")? {
+            return Err(crate::error::MyBibleError::MissingTable {
+                table: "dictionary".to_string(),
+                module: abbreviation.to_string(),
+            });
+        }
+
         let info = read_info_table(&conn)?;
         let fragments = read_content_fragments(&conn)?;
 

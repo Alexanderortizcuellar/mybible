@@ -28,9 +28,42 @@ impl RepositoryClient {
         Self { agent }
     }
 
-    /// Fetches and parses the official MyBible module registry from the cloud.
+    /// Fetches and parses the official MyBible module registry from the cloud or local disk cache.
     pub fn fetch_official_registry(&self) -> Result<ModuleRegistry> {
-        self.fetch_registry_zip(OFFICIAL_REGISTRY_URL)
+        let cache_path =
+            dirs::home_dir().map(|h| h.join(".mybible").join("cache").join("registry.json"));
+        if let Some(ref path) = cache_path {
+            if path.exists() {
+                if let Ok(metadata) = std::fs::metadata(path) {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(elapsed) = modified.elapsed() {
+                            // 3 days cache freshness
+                            if elapsed.as_secs() < 86400 * 3 {
+                                if let Ok(content) = std::fs::read_to_string(path) {
+                                    if let Ok(reg) = ModuleRegistry::from_json_str(&content) {
+                                        return Ok(reg);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let reg = self.fetch_registry_zip(OFFICIAL_REGISTRY_URL)?;
+
+        // Cache registry to disk for offline access and instant future loads
+        if let Some(ref path) = cache_path {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json_str) = serde_json::to_string(&reg) {
+                let _ = std::fs::write(path, json_str);
+            }
+        }
+
+        Ok(reg)
     }
 
     /// Fetches a module registry from a given URL (supports both .zip and .json).

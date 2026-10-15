@@ -5,9 +5,10 @@ module type filters, instant search, and one-click downloading.
 
 from typing import Optional
 
-from PySide6.QtCore import QLocale, Qt, Signal, QThread
+from PySide6.QtCore import QLocale, Qt, Signal, QThread, QTimer
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QHBoxLayout,
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import subprocess
+
 from gui.backend import RustBackendClient
 
 
@@ -32,19 +35,46 @@ class DownloadWorker(QThread):
 
     downloadFinished = Signal(bool, str, str)  # success, abbr, message
 
-    def __init__(self, backend: RustBackendClient, abbreviation: str, parent=None):
+    def __init__(self, binary_path: str, data_dir: str, abbreviation: str, parent=None):
         super().__init__(parent)
-        self.backend = backend
+        self.binary_path = binary_path
+        self.data_dir = data_dir
         self.abbreviation = abbreviation
 
     def run(self):
         try:
-            res = self.backend.download_module(self.abbreviation)
-            if res and res.get("success"):
-                self.downloadFinished.emit(True, self.abbreviation, f"Module '{self.abbreviation}' downloaded and loaded.")
+            cmd = [self.binary_path]
+            if self.data_dir:
+                cmd.extend(["--dir", self.data_dir])
+            cmd.extend(["modules", "download", self.abbreviation])
+
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=180,
+            )
+            if res.returncode == 0:
+                self.downloadFinished.emit(
+                    True,
+                    self.abbreviation,
+                    f"Module '{self.abbreviation}' successfully downloaded and installed.",
+                )
             else:
-                msg = res.get("error", "Unknown error") if res else "Download request failed."
-                self.downloadFinished.emit(False, self.abbreviation, msg)
+                err_text = (
+                    res.stderr.strip()
+                    or res.stdout.strip()
+                    or f"Process exited with code {res.returncode}"
+                )
+                self.downloadFinished.emit(False, self.abbreviation, err_text)
+        except subprocess.TimeoutExpired:
+            self.downloadFinished.emit(
+                False,
+                self.abbreviation,
+                f"Download of '{self.abbreviation}' timed out.",
+            )
         except Exception as e:
             self.downloadFinished.emit(False, self.abbreviation, str(e))
 
@@ -59,12 +89,18 @@ class ModulesDialog(QDialog):
         self.backend = backend
         self.catalog_data: Optional[dict] = None
         self.active_workers: list[DownloadWorker] = []
+        self.catalog_initialized: bool = False
 
         self.setWindowTitle("Module Manager — MyBible")
         self.resize(950, 680)
         self.init_ui()
         self.load_installed()
-        self.load_catalog_filter()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.catalog_initialized:
+            self.catalog_initialized = True
+            QTimer.singleShot(50, self.load_catalog_filter)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -115,9 +151,9 @@ class ModulesDialog(QDialog):
 
         # Catalog Modules Table
         self.table_catalog = QTableWidget(0, 6)
-        self.table_catalog.setHorizontalHeaderLabels([
-            "Abbr", "Type", "Language", "Size", "Description", "Action"
-        ])
+        self.table_catalog.setHorizontalHeaderLabels(
+            ["Abbr", "Type", "Language", "Size", "Description", "Action"]
+        )
         header = self.table_catalog.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -144,12 +180,18 @@ class ModulesDialog(QDialog):
         inst_layout = QVBoxLayout(self.tab_installed)
 
         self.dir_label = QLabel("Active Data Directory: ...")
-        self.dir_label.setStyleSheet("font-weight: bold; color: #2b6cb0; margin-bottom: 6px;")
+        self.dir_label.setStyleSheet(
+            "font-weight: bold; color: #2b6cb0; margin-bottom: 6px;"
+        )
         inst_layout.addWidget(self.dir_label)
 
         self.table_installed = QTableWidget(0, 3)
-        self.table_installed.setHorizontalHeaderLabels(["Category", "Abbreviation", "Status"])
-        self.table_installed.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_installed.setHorizontalHeaderLabels(
+            ["Category", "Abbreviation", "Status"]
+        )
+        self.table_installed.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
         self.table_installed.setAlternatingRowColors(True)
         inst_layout.addWidget(self.table_installed)
 
@@ -182,9 +224,12 @@ class ModulesDialog(QDialog):
         return "all"
 
     def load_catalog_filter(self):
-        """Fetches catalog from backend with current filter parameters."""
-        self.cat_status.setText("Fetching official module registry...")
+        """Fetches catalog after dialog is shown with current filter parameters."""
+        self.cat_status.setText(
+            "⏳ Connecting to online repository (4,000+ modules available)..."
+        )
         self.progress_bar.setVisible(True)
+        QApplication.processEvents()
 
         lang = self.lang_combo.currentData() if self.lang_combo.count() > 0 else None
         mtype = self.type_combo.currentData() if self.type_combo.count() > 0 else "all"
@@ -194,9 +239,13 @@ class ModulesDialog(QDialog):
         self.progress_bar.setVisible(False)
 
         if not data:
-            self.cat_status.setText("Failed to load catalog from server.")
+            self.cat_status.setText("⚠️ Failed to load catalog from server.")
             return
 
+        self.on_catalog_loaded(data)
+
+    def on_catalog_loaded(self, data: dict):
+        self.progress_bar.setVisible(False)
         self.catalog_data = data
 
         # Populate language dropdown if not populated yet
@@ -208,10 +257,10 @@ class ModulesDialog(QDialog):
             detected = self.detect_default_language(languages)
 
             selected_idx = 0
-            for idx, l in enumerate(languages):
-                code = l.get("code", "")
-                name = l.get("name", code)
-                count = l.get("count", 0)
+            for idx, lang in enumerate(languages):
+                code = lang.get("code", "")
+                name = lang.get("name", code)
+                count = lang.get("count", 0)
                 label = f"{name} ({count})"
                 self.lang_combo.addItem(label, userData=code)
                 if code.lower() == detected.lower():
@@ -220,23 +269,23 @@ class ModulesDialog(QDialog):
             self.lang_combo.setCurrentIndex(selected_idx)
             self.lang_combo.blockSignals(False)
 
-            # Re-fetch with detected language
+            # Re-fetch with detected language if specific language selected
             if selected_idx != 0:
-                self.on_filter_changed()
+                self.load_catalog_filter()
                 return
 
-        self.populate_catalog_table(data.get("modules", []))
+        modules = data.get("modules", [])
+        self.populate_catalog_table(modules)
+        self.cat_status.setText(f"✓ {len(modules)} modules loaded. Ready.")
+
+    def on_catalog_error(self, err_msg: str):
+        self.progress_bar.setVisible(False)
+        self.cat_status.setText(f"⚠️ {err_msg}")
 
     def on_filter_changed(self):
         """Called whenever language, type, or query filter changes."""
-        lang = self.lang_combo.currentData() or "all"
-        mtype = self.type_combo.currentData() or "all"
-        query = self.search_input.text().strip()
-
         self.cat_status.setText("Filtering modules...")
-        data = self.backend.get_catalog(query=query, language=lang, mod_type=mtype)
-        if data:
-            self.populate_catalog_table(data.get("modules", []))
+        self.load_catalog_filter()
 
     def populate_catalog_table(self, modules: list[dict]):
         """Populates the catalog table with downloadable module cards."""
@@ -263,7 +312,9 @@ class ModulesDialog(QDialog):
             if is_installed:
                 installed_label = QLabel("✓ Installed")
                 installed_label.setAlignment(Qt.AlignCenter)
-                installed_label.setStyleSheet("color: #2e7d32; font-weight: bold; padding: 2px;")
+                installed_label.setStyleSheet(
+                    "color: #2e7d32; font-weight: bold; padding: 2px;"
+                )
                 self.table_catalog.setCellWidget(row, 5, installed_label)
             else:
                 dl_btn = QPushButton("Download")
@@ -279,7 +330,9 @@ class ModulesDialog(QDialog):
                         background-color: #3182ce;
                     }
                 """)
-                dl_btn.clicked.connect(lambda _, a=abbr, r=row: self.start_download(a, r))
+                dl_btn.clicked.connect(
+                    lambda _, a=abbr, r=row: self.start_download(a, r)
+                )
                 self.table_catalog.setCellWidget(row, 5, dl_btn)
 
         count = len(modules)
@@ -293,37 +346,64 @@ class ModulesDialog(QDialog):
         spin_label.setStyleSheet("color: #d69e2e; font-weight: bold;")
         self.table_catalog.setCellWidget(row, 5, spin_label)
         self.cat_status.setText(f"Downloading module '{abbreviation}'...")
-        self.progress_bar.setVisible(True)
-
-        worker = DownloadWorker(self.backend, abbreviation, self)
-        worker.downloadFinished.connect(lambda ok, a, msg: self.on_download_finished(ok, a, msg, row))
+        info = self.backend.get_modules()
+        data_dir = info.get("data_dir", "modules")
+        worker = DownloadWorker(self.backend.binary_path, data_dir, abbreviation, self)
+        worker.downloadFinished.connect(
+            lambda ok, a, msg: self.on_download_finished(ok, a, msg, row)
+        )
+        worker.finished.connect(
+            lambda: (
+                self.active_workers.remove(worker)
+                if worker in self.active_workers
+                else None
+            )
+        )
         self.active_workers.append(worker)
         worker.start()
 
-    def on_download_finished(self, success: bool, abbreviation: str, message: str, row: int):
+    def on_download_finished(
+        self, success: bool, abbreviation: str, message: str, row: int
+    ):
         self.progress_bar.setVisible(False)
         if success:
+            # Reload modules into active server memory
+            self.backend.reload_modules()
             installed_label = QLabel("✓ Installed")
             installed_label.setAlignment(Qt.AlignCenter)
-            installed_label.setStyleSheet("color: #2e7d32; font-weight: bold; padding: 2px;")
+            installed_label.setStyleSheet(
+                "color: #2e7d32; font-weight: bold; padding: 2px;"
+            )
             self.table_catalog.setCellWidget(row, 5, installed_label)
             self.cat_status.setText(f"Successfully downloaded '{abbreviation}'.")
             self.load_installed()
             self.modulesUpdated.emit()
-            QMessageBox.information(self, "Download Complete", f"Module '{abbreviation}' was successfully installed and loaded into MyBible!")
+            QMessageBox.information(
+                self,
+                "Download Complete",
+                f"Module '{abbreviation}' was successfully installed and loaded into MyBible!",
+            )
         else:
             retry_btn = QPushButton("Retry")
-            retry_btn.clicked.connect(lambda _, a=abbreviation, r=row: self.start_download(a, r))
+            retry_btn.clicked.connect(
+                lambda _, a=abbreviation, r=row: self.start_download(a, r)
+            )
             self.table_catalog.setCellWidget(row, 5, retry_btn)
             self.cat_status.setText(f"Download failed: {message}")
-            QMessageBox.critical(self, "Download Failed", f"Could not download '{abbreviation}':\n{message}")
+            QMessageBox.critical(
+                self,
+                "Download Failed",
+                f"Could not download '{abbreviation}':\n{message}",
+            )
 
     # --- Installed Modules Tab ---
 
     def load_installed(self):
         """Loads and lists currently installed local modules."""
         info = self.backend.get_modules()
-        self.dir_label.setText(f"Active Data Directory: {info.get('data_dir', 'modules')}")
+        self.dir_label.setText(
+            f"Active Data Directory: {info.get('data_dir', 'modules')}"
+        )
 
         categories = [
             ("Bible", info.get("bibles", [])),

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     /// Custom modules data directory path (overrides default)
-    #[arg(short = 'd', long = "dir", global = true)]
+    #[arg(short = 'd', long = "dir", alias = "data-dir", global = true)]
     pub data_dir: Option<PathBuf>,
 
     /// Disable ANSI colored output in terminal

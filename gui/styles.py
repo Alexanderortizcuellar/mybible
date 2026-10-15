@@ -5,7 +5,9 @@ Provides high-contrast, cohesive styling across light, sepia, and dark study the
 import os
 from PySide6.QtGui import QColor, QPalette
 
-ICONS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "icons")).replace("\\", "/")
+ICONS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "icons")).replace(
+    "\\", "/"
+)
 
 
 def get_theme_palette(theme_name: str = "light") -> QPalette:
@@ -77,7 +79,8 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
     t = theme_name.lower()
 
     if "dark" in t:
-        return """
+        return (
+            """
         /* === PROFESSIONAL DARK THEME === */
         QMainWindow {
             background-color: #141824;
@@ -154,7 +157,7 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             color: #ffffff !important;
             border: 1px solid #36425d;
             border-radius: 5px;
-            padding: 4px 18px 4px 7px;
+            padding: 2px 24px 2px 8px;
             min-height: 26px;
             font-size: 13px;
             font-weight: 500;
@@ -296,19 +299,43 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             background-color: #192032;
             color: #e2e8f0;
             padding: 7px 12px;
+            padding-right: 58px;
             border-bottom: 2px solid #2b6cb0;
             font-size: 12px;
             font-weight: bold;
         }
-        QDockWidget::close-button, QDockWidget::float-button {
+        QDockWidget::close-button {
+            subcontrol-position: top right;
+            subcontrol-origin: margin;
+            position: absolute;
+            top: 7px;
+            right: 8px;
+            width: 18px;
+            height: 18px;
             border: none;
-            background: transparent;
-            padding: 2px;
-            icon-size: 14px;
-        }
-        QDockWidget::close-button:hover, QDockWidget::float-button:hover {
-            background-color: #2d3a52;
             border-radius: 3px;
+            image: url(@DOCK_CLOSE@);
+            background: transparent;
+        }
+        QDockWidget::close-button:hover {
+            background-color: rgba(239, 68, 68, 0.25);
+            image: url(@DOCK_CLOSE_HOVER@);
+        }
+        QDockWidget::float-button {
+            subcontrol-position: top right;
+            subcontrol-origin: margin;
+            position: absolute;
+            top: 7px;
+            right: 32px;
+            width: 18px;
+            height: 18px;
+            border: none;
+            border-radius: 3px;
+            image: url(@DOCK_FLOAT@);
+            background: transparent;
+        }
+        QDockWidget::float-button:hover {
+            background-color: #2d3a52;
         }
 
         /* Tab Widget */
@@ -375,9 +402,14 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             border-color: #3182ce;
         }
         """.replace("@ARROW_DOWN@", f"{ICONS_DIR}/arrow_down_white.png")
+            .replace("@DOCK_CLOSE@", f"{ICONS_DIR}/dock_close_white.png")
+            .replace("@DOCK_CLOSE_HOVER@", f"{ICONS_DIR}/dock_close_red.png")
+            .replace("@DOCK_FLOAT@", f"{ICONS_DIR}/dock_float_white.png")
+        )
 
     elif "sepia" in t:
-        return """
+        return (
+            """
         /* === PROFESSIONAL SEPIA THEME === */
         QMainWindow {
             background-color: #f4ecd8;
@@ -426,7 +458,7 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             color: #3d2f1d !important;
             border: 1px solid #c9bca0;
             border-radius: 5px;
-            padding: 4px 18px 4px 7px;
+            padding: 2px 24px 2px 8px;
             min-height: 26px;
             font-size: 13px;
             font-weight: 500;
@@ -518,13 +550,52 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             font-weight: 600;
         }
 
+        /* Docks */
+        QDockWidget {
+            color: #4a3823;
+            font-weight: bold;
+        }
         QDockWidget::title {
             background-color: #ece1c6;
             color: #4a3823;
             padding: 7px 12px;
+            padding-right: 58px;
             border-bottom: 2px solid #8c5b2a;
             font-size: 12px;
             font-weight: bold;
+        }
+        QDockWidget::close-button {
+            subcontrol-position: top right;
+            subcontrol-origin: margin;
+            position: absolute;
+            top: 7px;
+            right: 8px;
+            width: 18px;
+            height: 18px;
+            border: none;
+            border-radius: 3px;
+            image: url(@DOCK_CLOSE@);
+            background: transparent;
+        }
+        QDockWidget::close-button:hover {
+            background-color: #fde8e8;
+            image: url(@DOCK_CLOSE_HOVER@);
+        }
+        QDockWidget::float-button {
+            subcontrol-position: top right;
+            subcontrol-origin: margin;
+            position: absolute;
+            top: 7px;
+            right: 32px;
+            width: 18px;
+            height: 18px;
+            border: none;
+            border-radius: 3px;
+            image: url(@DOCK_FLOAT@);
+            background: transparent;
+        }
+        QDockWidget::float-button:hover {
+            background-color: #ede3cb;
         }
 
         QTabBar::tab:selected {
@@ -539,10 +610,15 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             border-top: 1px solid #dcd0b6;
         }
         """.replace("@ARROW_DOWN@", f"{ICONS_DIR}/arrow_down_sepia.png")
+            .replace("@DOCK_CLOSE@", f"{ICONS_DIR}/dock_close_sepia.png")
+            .replace("@DOCK_CLOSE_HOVER@", f"{ICONS_DIR}/dock_close_red.png")
+            .replace("@DOCK_FLOAT@", f"{ICONS_DIR}/dock_float_sepia.png")
+        )
 
     else:
         # === PROFESSIONAL LIGHT THEME ===
-        return """
+        return (
+            """
         /* === PROFESSIONAL LIGHT THEME === */
         QMainWindow {
             background-color: #f0f4f8;
@@ -620,7 +696,7 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             color: #1a202c !important;
             border: 1px solid #b8c4d1;
             border-radius: 5px;
-            padding: 4px 18px 4px 7px;
+            padding: 2px 24px 2px 8px;
             min-height: 26px;
             font-size: 13px;
             font-weight: 500;
@@ -762,19 +838,43 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             background-color: #f7fafc;
             color: #2d3748;
             padding: 7px 12px;
+            padding-right: 58px;
             border-bottom: 2px solid #2b6cb0;
             font-size: 12px;
             font-weight: bold;
         }
-        QDockWidget::close-button, QDockWidget::float-button {
+        QDockWidget::close-button {
+            subcontrol-position: top right;
+            subcontrol-origin: margin;
+            position: absolute;
+            top: 7px;
+            right: 8px;
+            width: 18px;
+            height: 18px;
             border: none;
-            background: transparent;
-            padding: 2px;
-            icon-size: 14px;
-        }
-        QDockWidget::close-button:hover, QDockWidget::float-button:hover {
-            background-color: #edf2f7;
             border-radius: 3px;
+            image: url(@DOCK_CLOSE@);
+            background: transparent;
+        }
+        QDockWidget::close-button:hover {
+            background-color: #fee2e2;
+            image: url(@DOCK_CLOSE_HOVER@);
+        }
+        QDockWidget::float-button {
+            subcontrol-position: top right;
+            subcontrol-origin: margin;
+            position: absolute;
+            top: 7px;
+            right: 32px;
+            width: 18px;
+            height: 18px;
+            border: none;
+            border-radius: 3px;
+            image: url(@DOCK_FLOAT@);
+            background: transparent;
+        }
+        QDockWidget::float-button:hover {
+            background-color: #edf2f7;
         }
 
         /* Tab Widget */
@@ -841,3 +941,7 @@ def get_theme_stylesheet(theme_name: str = "light") -> str:
             border-color: #2b6cb0;
         }
         """.replace("@ARROW_DOWN@", f"{ICONS_DIR}/arrow_down_dark.png")
+            .replace("@DOCK_CLOSE@", f"{ICONS_DIR}/dock_close_dark.png")
+            .replace("@DOCK_CLOSE_HOVER@", f"{ICONS_DIR}/dock_close_red.png")
+            .replace("@DOCK_FLOAT@", f"{ICONS_DIR}/dock_float_dark.png")
+        )

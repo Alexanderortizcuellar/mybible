@@ -11,8 +11,9 @@ lazy_static::lazy_static! {
     // "Psalm 23"
     // "1 Cor 13:4-8"
     // "10 1:1"
+    // "ΓΕΝΕΣΙΣ 14"
     static ref RE_REF_VERSE: Regex = Regex::new(
-        r"^(?i)\s*(?:(\d\s+[a-zA-ZáéíóúÁÉÍÓÚа-яА-ЯёЁ]+|[a-zA-ZáéíóúÁÉÍÓÚа-яА-ЯёЁ]+|\d+)\s*)\s+(\d+)(?:\s*[:.]\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?\s*$"
+        r"^(?i)\s*(?:(\d\s+[\p{L}.]+|[\p{L}.]+|\d+)\s*)\s+(\d+)(?:\s*[:.]\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?\s*$"
     ).unwrap();
 }
 
@@ -91,6 +92,27 @@ pub fn parse_passage_reference(input: &str) -> Result<ParsedReference> {
     )))
 }
 
+/// Normalizes accented characters (Latin and Greek diacritics) for fuzzy reference matching.
+pub fn strip_accents(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ä' | 'ã' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ά' => 'α',
+            'έ' => 'ε',
+            'ή' => 'η',
+            'ί' | 'ϊ' | 'ΐ' => 'ι',
+            'ό' => 'ο',
+            'ύ' | 'ϋ' | 'ΰ' => 'υ',
+            'ώ' => 'ω',
+            _ => c,
+        })
+        .collect()
+}
+
 /// Resolves a book name, abbreviation, or numeric ID into a canonical BookNumber and display title.
 pub fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
     let cleaned = name.trim();
@@ -108,51 +130,52 @@ pub fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
         return Ok((info.book_number, info.long_name_eng.to_string()));
     }
 
-    // 3. Extended common aliases (English, Spanish, common shortcuts)
+    // 3. Extended common aliases (English, Spanish, Greek, common shortcuts)
     let lower = cleaned.to_lowercase().replace('.', "");
     let normalized = lower.replace(' ', "");
+    let unaccented = strip_accents(&normalized);
 
-    let matched_num = match normalized.as_str() {
+    let matched_num = match unaccented.as_str() {
         // Old Testament
-        "ge" | "gn" | "gen" | "genesis" | "génesis" => Some(10),
-        "ex" | "exo" | "exod" | "exodus" | "éxodo" | "exodo" => Some(20),
-        "le" | "lev" | "leviticus" | "levítico" | "levitico" => Some(30),
-        "nu" | "num" | "numbers" | "números" | "numeros" => Some(40),
+        "ge" | "gn" | "gen" | "genesis" => Some(10),
+        "ex" | "exo" | "exod" | "exodus" | "exodo" => Some(20),
+        "le" | "lev" | "leviticus" | "levitico" => Some(30),
+        "nu" | "num" | "numbers" | "numeros" => Some(40),
         "de" | "deut" | "dt" | "deuteronomy" | "deuteronomio" => Some(50),
-        "jos" | "josh" | "joshua" | "josué" | "josue" => Some(60),
+        "jos" | "josh" | "joshua" | "josue" => Some(60),
         "jdg" | "judg" | "judges" | "jueces" => Some(70),
         "ru" | "rut" | "ruth" => Some(80),
         "1sam" | "1sa" | "1samuel" => Some(90),
         "2sam" | "2sa" | "2samuel" => Some(100),
         "1ki" | "1kings" | "1re" | "1reyes" => Some(110),
         "2ki" | "2kings" | "2re" | "2reyes" => Some(120),
-        "1ch" | "1chr" | "1chron" | "1chronicles" | "1cr" | "1crónicas" | "1cronicas" => Some(130),
-        "2ch" | "2chr" | "2chron" | "2chronicles" | "2cr" | "2crónicas" | "2cronicas" => Some(140),
+        "1ch" | "1chr" | "1chron" | "1chronicles" | "1cr" | "1cronicas" => Some(130),
+        "2ch" | "2chr" | "2chron" | "2chronicles" | "2cr" | "2cronicas" => Some(140),
         "ezr" | "ezra" | "esdras" => Some(150),
-        "ne" | "neh" | "nehemiah" | "nehemías" | "nehemias" => Some(160),
+        "ne" | "neh" | "nehemiah" | "nehemias" => Some(160),
         "es" | "est" | "esth" | "esther" | "ester" => Some(190),
         "jb" | "job" => Some(220),
         "ps" | "psa" | "psalm" | "psalms" | "sal" | "salmo" | "salmos" => Some(230),
         "pr" | "pro" | "prov" | "proverbs" | "proverbios" => Some(240),
-        "ec" | "ecc" | "eccles" | "ecclesiastes" | "eclesiastés" | "eclesiastes" => Some(250),
+        "ec" | "ecc" | "eccles" | "ecclesiastes" | "eclesiastes" => Some(250),
         "so" | "song" | "songofsolomon" | "cantares" | "cantar" => Some(260),
-        "is" | "isa" | "isaiah" | "isaías" | "isaias" => Some(290),
-        "je" | "jer" | "jeremiah" | "jeremías" | "jeremias" => Some(300),
+        "is" | "isa" | "isaiah" | "isaias" => Some(290),
+        "je" | "jer" | "jeremiah" | "jeremias" => Some(300),
         "la" | "lam" | "lamentations" | "lamentaciones" => Some(310),
         "ez" | "eze" | "ezek" | "ezekiel" | "ezequiel" => Some(330),
         "da" | "dan" | "daniel" => Some(340),
         "ho" | "hos" | "hosea" | "oseas" => Some(350),
         "joe" | "joel" => Some(360),
-        "am" | "amos" | "amós" => Some(370),
-        "ob" | "oba" | "obad" | "obadiah" | "abdías" | "abdias" => Some(380),
-        "jon" | "jonah" | "jonás" | "jonas" => Some(390),
+        "am" | "amos" => Some(370),
+        "ob" | "oba" | "obad" | "obadiah" | "abdias" => Some(380),
+        "jon" | "jonah" | "jonas" => Some(390),
         "mic" | "micah" | "miqueas" => Some(400),
-        "na" | "nah" | "nahum" | "nahúm" => Some(410),
+        "na" | "nah" | "nahum" => Some(410),
         "hab" | "habakkuk" | "habacuc" => Some(420),
-        "zep" | "zeph" | "zephaniah" | "sof" | "sofonías" | "sofonias" => Some(430),
+        "zep" | "zeph" | "zephaniah" | "sof" | "sofonias" => Some(430),
         "hag" | "haggai" | "hageo" => Some(440),
-        "zec" | "zech" | "zechariah" | "zac" | "zacarías" | "zacarias" => Some(450),
-        "mal" | "malachi" | "malaquías" | "malaquias" => Some(460),
+        "zec" | "zech" | "zechariah" | "zac" | "zacarias" => Some(450),
+        "mal" | "malachi" | "malaquias" => Some(460),
 
         // New Testament
         "mt" | "mat" | "matt" | "matthew" | "mateo" => Some(470),
@@ -163,7 +186,7 @@ pub fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
         "ro" | "rom" | "romans" | "romanos" => Some(520),
         "1co" | "1cor" | "1corinthians" | "1corintios" => Some(530),
         "2co" | "2cor" | "2corinthians" | "2corintios" => Some(540),
-        "ga" | "gal" | "galatians" | "gálatas" | "galatas" => Some(550),
+        "ga" | "gal" | "galatians" | "galatas" => Some(550),
         "eph" | "ephes" | "ephesians" | "efesios" => Some(560),
         "php" | "phil" | "philippians" | "filipenses" => Some(570),
         "col" | "coloss" | "colossians" | "colosenses" => Some(580),
@@ -172,7 +195,7 @@ pub fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
         "1ti" | "1tim" | "1timothy" | "1timoteo" => Some(610),
         "2ti" | "2tim" | "2timothy" | "2timoteo" => Some(620),
         "tit" | "titus" | "tito" => Some(630),
-        "phm" | "philem" | "philemon" | "filemón" | "filemon" => Some(640),
+        "phm" | "philem" | "philemon" | "filemon" => Some(640),
         "heb" | "hebr" | "hebrews" | "hebreos" => Some(650),
         "jas" | "jam" | "james" | "stg" | "santiago" => Some(660),
         "1pe" | "1pet" | "1peter" | "1ped" | "1pedro" => Some(670),
@@ -182,6 +205,74 @@ pub fn resolve_book(name: &str) -> Result<(BookNumber, String)> {
         "3jn" | "3john" | "3juan" => Some(710),
         "jud" | "jude" | "jds" | "judas" => Some(720),
         "re" | "rev" | "revelation" | "ap" | "apoc" | "apocalipsis" => Some(730),
+
+        // Greek OT & NT aliases
+        "γενεσις" | "γεν" | "γενεση" => Some(10),
+        "εξοδος" | "εξ" => Some(20),
+        "λευιτικον" | "λευ" => Some(30),
+        "αριθμοι" | "αρ" => Some(40),
+        "δευτερονομιον" | "δευτ" | "δτ" => Some(50),
+        "ιησους" | "ιησουςναυη" => Some(60),
+        "κριται" | "κριτ" => Some(70),
+        "ρουθ" => Some(80),
+        "1βασιλειων" | "1βασ" => Some(90),
+        "2βασιλειων" | "2βασ" => Some(100),
+        "3βασιλειων" | "3βασ" => Some(110),
+        "4βασιλειων" | "4βασ" => Some(120),
+        "1παραλειπομενων" | "1παρ" => Some(130),
+        "2παραλειπομενων" | "2παρ" => Some(140),
+        "εσδρας" => Some(150),
+        "νεεμιας" => Some(160),
+        "εσθηρ" => Some(190),
+        "ιωβ" => Some(220),
+        "ψαλμοι" | "ψαλ" => Some(230),
+        "παροιμιαι" | "παρ" => Some(240),
+        "εκκλησιαστης" | "εκκλ" => Some(250),
+        "ασμαασματων" | "ασμα" => Some(260),
+        "ησαιας" | "ησ" => Some(290),
+        "ιερεμιας" | "ιερ" => Some(300),
+        "θρηνοι" => Some(310),
+        "ιεζεκιηλ" => Some(330),
+        "δανιηλ" | "δαν" => Some(340),
+        "ωσηε" => Some(350),
+        "ιωηλ" => Some(360),
+        "αμως" => Some(370),
+        "οβδιου" | "αβδιου" => Some(380),
+        "ιωνας" => Some(390),
+        "μιχαιας" => Some(400),
+        "ναουμ" => Some(410),
+        "αββακουμ" => Some(420),
+        "σοφονιας" => Some(430),
+        "αγγαιος" => Some(440),
+        "ζαχαριας" => Some(450),
+        "μαλαχιας" => Some(460),
+        "ματθαιος" | "ματθ" | "ματ" => Some(470),
+        "μαρκος" | "μαρκ" | "μαρ" => Some(480),
+        "λουκας" | "λουκ" | "λου" => Some(490),
+        "ιωαννης" | "ιωαν" | "ιω" => Some(500),
+        "πραξεις" | "πραξ" | "πρ" => Some(510),
+        "ρωμαιους" | "ρωμ" | "ρω" => Some(520),
+        "1κορινθιους" | "1κορ" | "ακορινθιους" => Some(530),
+        "2κορινθιους" | "2κορ" | "βκορινθιους" => Some(540),
+        "γαλατας" | "γαλ" => Some(550),
+        "εφεσιους" | "εφεσ" => Some(560),
+        "φιλιππησιους" | "φιλιπ" => Some(570),
+        "κολοσσαεις" | "κολοσ" => Some(580),
+        "1θεσσαλονικεις" | "1θεσ" | "αθεσσαλονικεις" => Some(590),
+        "2θεσσαλονικεις" | "2θεσ" | "βθεσσαλονικεις" => Some(600),
+        "1τιμοθεον" | "1τιμ" | "ατιμοθεον" => Some(610),
+        "2τιμοθεον" | "2τιμ" | "βτιμοθεον" => Some(620),
+        "τιτον" | "τιτ" => Some(630),
+        "φιλημονα" | "φιλ" => Some(640),
+        "εβραιους" | "εβρ" => Some(650),
+        "ιακωβος" | "ιακ" => Some(660),
+        "1πετρου" | "1πετρ" | "1πετ" | "απετρου" => Some(670),
+        "2πετρου" | "2πετρ" | "2πετ" | "βπετρου" => Some(680),
+        "1ιωαννου" | "1ιωαν" | "1ιω" | "αιωαννου" => Some(690),
+        "2ιωαννου" | "2ιωαν" | "2ιω" | "βιωαννου" => Some(700),
+        "3ιωαννου" | "3ιωαν" | "3ιω" | "γιωαννου" => Some(710),
+        "ιουδα" | "ιουδ" => Some(720),
+        "αποκαλυψη" | "αποκαλυψις" | "αποκ" => Some(730),
         _ => None,
     };
 

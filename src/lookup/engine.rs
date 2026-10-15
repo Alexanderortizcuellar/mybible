@@ -118,9 +118,21 @@ impl DictionaryLookupEngine {
             }));
         }
 
-        // If query has digits only, try with "H" and "G" prefixes
+        let query_upper = query.to_uppercase();
+        if query_upper != query {
+            if let Some(article) = dict.get_topic(&query_upper)? {
+                return Ok(Some(LookupMatch {
+                    dictionary_name: dict.abbreviation().to_string(),
+                    dictionary_type: dict.dictionary_type(),
+                    topic: article.topic.clone(),
+                    article: Some(article),
+                }));
+            }
+        }
+
+        // If query has digits only, try with "G" and "H" prefixes
         if query.chars().all(|c| c.is_ascii_digit()) {
-            for prefix in &["H", "G"] {
+            for prefix in &["G", "H"] {
                 let candidate = format!("{}{}", prefix, query);
                 if let Some(article) = dict.get_topic(&candidate)? {
                     return Ok(Some(LookupMatch {

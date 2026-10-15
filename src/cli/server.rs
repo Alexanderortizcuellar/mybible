@@ -119,6 +119,7 @@ impl InteractiveServer {
             "catalog" => self.handle_catalog(id, &req.params),
             "download" => self.handle_download(id, &req.params),
             "reload" => self.handle_reload(id),
+            "devotion" => self.handle_devotion(id, &req.params),
             unknown => self.resp_err(id, &format!("Unknown method '{}'", unknown)),
         }
     }
@@ -167,12 +168,22 @@ impl InteractiveServer {
         let mut dev_list: Vec<_> = self.engine.devotions.keys().cloned().collect();
         dev_list.sort();
 
+        let mut strong_d_list: Vec<String> = self
+            .engine
+            .dictionaries
+            .iter()
+            .filter(|(_, d)| d.dictionary_type() == crate::types::DictionaryType::StrongLexicon)
+            .map(|(k, _)| k.clone())
+            .collect();
+        strong_d_list.sort();
+
         let val = serde_json::json!({
             "data_dir": self.data_dir.display().to_string(),
             "total_modules": self.engine.total_modules(),
             "bibles": b_list,
             "commentaries": c_list,
             "dictionaries": d_list,
+            "strong_dictionaries": strong_d_list,
             "cross_references": x_list,
             "subheadings": s_list,
             "reading_plans": p_list,
@@ -226,16 +237,6 @@ impl InteractiveServer {
     }
 
     fn handle_read(&self, id: Option<u64>, params: &Value) -> String {
-        let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
-            Some(r) => r,
-            None => return self.resp_err(id, "Missing 'ref' parameter"),
-        };
-
-        let parsed = match parse_passage_reference(ref_str) {
-            Ok(p) => p,
-            Err(e) => return self.resp_err(id, &e.to_string()),
-        };
-
         let bible_key = params
             .get("bible")
             .and_then(|v| v.as_str())
@@ -250,6 +251,55 @@ impl InteractiveServer {
         let bible = match self.engine.bibles.get(b_key) {
             Some(b) => b,
             None => return self.resp_err(id, &format!("Bible module '{}' not found", b_key)),
+        };
+
+        let parsed = if let (Some(b_num), Some(ch)) = (
+            params.get("book_number").and_then(|v| v.as_u64()),
+            params.get("chapter").and_then(|v| v.as_u64()),
+        ) {
+            let b = crate::types::BookNumber(b_num as u16);
+            let book_name = bible
+                .book(b)
+                .ok()
+                .flatten()
+                .map(|rec| rec.long_name)
+                .unwrap_or_else(|| {
+                    crate::books::find_book_by_number(b)
+                        .map(|i| i.long_name_eng.to_string())
+                        .unwrap_or_else(|| format!("Book {}", b_num))
+                });
+            let v_start = params
+                .get("verse_start")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            let v_end = params
+                .get("verse_end")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .or(v_start);
+            crate::parsers::reference::ParsedReference {
+                book: b,
+                book_name,
+                chapter: ch as u32,
+                verse_start: v_start,
+                verse_end: v_end,
+            }
+        } else {
+            let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
+                Some(r) => r,
+                None => return self.resp_err(id, "Missing 'ref' or 'book_number' parameter"),
+            };
+
+            match parse_passage_reference(ref_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    if let Some(p) = self.resolve_ref_from_bible(ref_str, bible.as_ref()) {
+                        p
+                    } else {
+                        return self.resp_err(id, &e.to_string());
+                    }
+                }
+            }
         };
 
         let v_start = parsed.verse_start.unwrap_or(1);
@@ -374,14 +424,52 @@ impl InteractiveServer {
     }
 
     fn handle_compare(&self, id: Option<u64>, params: &Value) -> String {
-        let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
-            Some(r) => r,
-            None => return self.resp_err(id, "Missing 'ref' parameter"),
-        };
+        let parsed = if let (Some(b_num), Some(ch)) = (
+            params.get("book_number").and_then(|v| v.as_u64()),
+            params.get("chapter").and_then(|v| v.as_u64()),
+        ) {
+            let b = crate::types::BookNumber(b_num as u16);
+            let book_name = crate::books::find_book_by_number(b)
+                .map(|i| i.long_name_eng.to_string())
+                .unwrap_or_else(|| format!("Book {}", b_num));
+            let v_start = params
+                .get("verse_start")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            let v_end = params
+                .get("verse_end")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .or(v_start);
+            crate::parsers::reference::ParsedReference {
+                book: b,
+                book_name,
+                chapter: ch as u32,
+                verse_start: v_start,
+                verse_end: v_end,
+            }
+        } else {
+            let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
+                Some(r) => r,
+                None => return self.resp_err(id, "Missing 'ref' or 'book_number' parameter"),
+            };
 
-        let parsed = match parse_passage_reference(ref_str) {
-            Ok(p) => p,
-            Err(e) => return self.resp_err(id, &e.to_string()),
+            match parse_passage_reference(ref_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    let mut resolved = None;
+                    for b in self.engine.bibles.values() {
+                        if let Some(p) = self.resolve_ref_from_bible(ref_str, b.as_ref()) {
+                            resolved = Some(p);
+                            break;
+                        }
+                    }
+                    match resolved {
+                        Some(p) => p,
+                        None => return self.resp_err(id, &e.to_string()),
+                    }
+                }
+            }
         };
 
         let bibles_req: Vec<String> = params
@@ -456,11 +544,6 @@ impl InteractiveServer {
             None => return self.resp_err(id, "Missing 'ref' parameter"),
         };
 
-        let parsed = match parse_passage_reference(ref_str) {
-            Ok(p) => p,
-            Err(e) => return self.resp_err(id, &e.to_string()),
-        };
-
         let bible_key = params
             .get("bible")
             .and_then(|v| v.as_str())
@@ -475,6 +558,17 @@ impl InteractiveServer {
         let bible = match self.engine.bibles.get(b_key) {
             Some(b) => b,
             None => return self.resp_err(id, &format!("Bible module '{}' not found", b_key)),
+        };
+
+        let parsed = match parse_passage_reference(ref_str) {
+            Ok(p) => p,
+            Err(e) => {
+                if let Some(p) = self.resolve_ref_from_bible(ref_str, bible.as_ref()) {
+                    p
+                } else {
+                    return self.resp_err(id, &e.to_string());
+                }
+            }
         };
 
         let v_start = parsed.verse_start.unwrap_or(1);
@@ -502,17 +596,80 @@ impl InteractiveServer {
         self.resp_ok(id, resp)
     }
 
+    fn resolve_ref_from_bible(
+        &self,
+        ref_str: &str,
+        bible: &crate::readers::bible::BibleReader,
+    ) -> Option<crate::parsers::reference::ParsedReference> {
+        let trimmed = ref_str.trim();
+        let mut parts = trimmed.rsplitn(2, |c: char| c.is_whitespace());
+        let ch_v_part = parts.next()?;
+        let book_part = parts.next()?.trim();
+
+        let mut ch_parts = ch_v_part.split(':');
+        let chapter: u32 = ch_parts.next()?.parse().ok()?;
+        let (v_start, v_end) = if let Some(v_part) = ch_parts.next() {
+            if let Some((st, en)) = v_part.split_once('-') {
+                (st.parse().ok(), en.parse().ok())
+            } else {
+                let v: Option<u32> = v_part.parse().ok();
+                (v, v)
+            }
+        } else {
+            (None, None)
+        };
+
+        // 1. Direct numeric book ID (e.g. "10 1:1" -> Genesis)
+        if let Ok(num) = book_part.parse::<u16>() {
+            let b_num = crate::types::BookNumber(num);
+            let b_name = bible
+                .book(b_num)
+                .ok()
+                .flatten()
+                .map(|b| b.long_name)
+                .unwrap_or_else(|| {
+                    crate::books::find_book_by_number(b_num)
+                        .map(|i| i.long_name_eng.to_string())
+                        .unwrap_or_else(|| format!("Book {}", num))
+                });
+            return Some(crate::parsers::reference::ParsedReference {
+                book: b_num,
+                book_name: b_name,
+                chapter,
+                verse_start: v_start,
+                verse_end: v_end,
+            });
+        }
+
+        // 2. Match against Bible books list with accent tolerance
+        let books = bible.books().ok()?;
+        let target_lower = book_part.to_lowercase().replace('.', "");
+        let norm_target = crate::parsers::reference::strip_accents(&target_lower);
+
+        for b in books {
+            let long_lower = b.long_name.to_lowercase().replace('.', "");
+            let norm_long = crate::parsers::reference::strip_accents(&long_lower);
+            let short_lower = b.short_name.to_lowercase().replace('.', "");
+            let norm_short = crate::parsers::reference::strip_accents(&short_lower);
+
+            if norm_target == norm_long
+                || norm_target == norm_short
+                || norm_long.starts_with(&norm_target)
+                || norm_target.starts_with(&norm_long)
+            {
+                return Some(crate::parsers::reference::ParsedReference {
+                    book: b.book_number,
+                    book_name: b.long_name,
+                    chapter,
+                    verse_start: v_start,
+                    verse_end: v_end,
+                });
+            }
+        }
+        None
+    }
+
     fn handle_commentary(&self, id: Option<u64>, params: &Value) -> String {
-        let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
-            Some(r) => r,
-            None => return self.resp_err(id, "Missing 'ref' parameter"),
-        };
-
-        let parsed = match parse_passage_reference(ref_str) {
-            Ok(p) => p,
-            Err(e) => return self.resp_err(id, &e.to_string()),
-        };
-
         let comm_key = params
             .get("module")
             .and_then(|v| v.as_str())
@@ -527,6 +684,46 @@ impl InteractiveServer {
         let comm_reader = match self.engine.commentaries.get(c_key) {
             Some(c) => c,
             None => return self.resp_err(id, &format!("Commentary module '{}' not found", c_key)),
+        };
+
+        let parsed = if let (Some(b_num), Some(ch)) = (
+            params.get("book_number").and_then(|v| v.as_u64()),
+            params.get("chapter").and_then(|v| v.as_u64()),
+        ) {
+            let b = crate::types::BookNumber(b_num as u16);
+            let v_start = params
+                .get("verse")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            crate::parsers::reference::ParsedReference {
+                book: b,
+                book_name: format!("Book {}", b_num),
+                chapter: ch as u32,
+                verse_start: v_start,
+                verse_end: v_start,
+            }
+        } else {
+            let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
+                Some(r) => r,
+                None => return self.resp_err(id, "Missing 'ref' or 'book_number' parameter"),
+            };
+
+            match parse_passage_reference(ref_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    let mut resolved = None;
+                    for b in self.engine.bibles.values() {
+                        if let Some(p) = self.resolve_ref_from_bible(ref_str, b.as_ref()) {
+                            resolved = Some(p);
+                            break;
+                        }
+                    }
+                    match resolved {
+                        Some(p) => p,
+                        None => return self.resp_err(id, &e.to_string()),
+                    }
+                }
+            }
         };
 
         let notes = if let Some(v) = parsed.verse_start {
@@ -562,55 +759,146 @@ impl InteractiveServer {
 
     fn handle_dict(&self, id: Option<u64>, params: &Value) -> String {
         let term = match params.get("term").and_then(|v| v.as_str()) {
-            Some(t) => t,
+            Some(t) => t.trim(),
             None => return self.resp_err(id, "Missing 'term' parameter"),
         };
 
-        let dict_key = params
-            .get("module")
-            .and_then(|v| v.as_str())
-            .or_else(|| self.engine.dictionaries.keys().next().map(|s| s.as_str()));
+        if term.is_empty() {
+            return self.resp_err(id, "Empty 'term' parameter");
+        }
 
-        let d_key = match dict_key {
-            Some(k) => k,
-            None => return self.resp_err(id, "No dictionary modules loaded"),
-        };
+        let is_digits = term.chars().all(|c| c.is_ascii_digit());
+        let is_strong_code = (term.starts_with('G')
+            || term.starts_with('g')
+            || term.starts_with('H')
+            || term.starts_with('h'))
+            && term.len() > 1
+            && term[1..].chars().all(|c| c.is_ascii_digit());
+        let is_strong_query = is_digits || is_strong_code;
 
-        let dict = match self.engine.dictionaries.get(d_key) {
-            Some(d) => d,
-            None => return self.resp_err(id, &format!("Dictionary module '{}' not found", d_key)),
-        };
+        let dict_key = params.get("module").and_then(|v| v.as_str());
 
-        let entry = dict.get_topic(term).unwrap_or(None);
-        let suggestions = if entry.is_none() {
-            let prefix = if term.len() >= 3 { &term[..3] } else { term };
-            dict.search_topics_prefix(prefix, 10).unwrap_or_default()
-        } else {
-            vec![]
-        };
+        // 1. If a specific dictionary is provided, try looking in it first
+        if let Some(d_key) = dict_key {
+            if let Some(dict) = self.engine.dictionaries.get(d_key) {
+                if let Ok(Some(entry)) = dict.get_topic(term) {
+                    return self.resp_dict_entry(id, term, d_key, Some(entry), vec![]);
+                }
+                let upper = term.to_uppercase();
+                if upper != term {
+                    if let Ok(Some(entry)) = dict.get_topic(&upper) {
+                        return self.resp_dict_entry(id, term, d_key, Some(entry), vec![]);
+                    }
+                }
+                if is_digits {
+                    for prefix in &["G", "H"] {
+                        let cand = format!("{}{}", prefix, term);
+                        if let Ok(Some(entry)) = dict.get_topic(&cand) {
+                            return self.resp_dict_entry(id, term, d_key, Some(entry), vec![]);
+                        }
+                    }
+                }
+            }
+        }
 
+        // 2. If it is a Strong number query, search across all Strong dictionaries using lookup_engine
+        if is_strong_query {
+            if let Ok(Some(m)) = self.engine.lookup_engine.lookup_strong(term) {
+                return self.resp_dict_entry(id, term, &m.dictionary_name, m.article, vec![]);
+            }
+            let upper = term.to_uppercase();
+            if upper != term {
+                if let Ok(Some(m)) = self.engine.lookup_engine.lookup_strong(&upper) {
+                    return self.resp_dict_entry(id, term, &m.dictionary_name, m.article, vec![]);
+                }
+            }
+        }
+
+        // 3. Fallback to default/first dictionary
+        let d_key = dict_key.or_else(|| self.engine.dictionaries.keys().next().map(|s| s.as_str()));
+
+        if let Some(k) = d_key {
+            if let Some(dict) = self.engine.dictionaries.get(k) {
+                if let Ok(Some(entry)) = dict.get_topic(term) {
+                    return self.resp_dict_entry(id, term, k, Some(entry), vec![]);
+                }
+                let prefix = if term.len() >= 3 { &term[..3] } else { term };
+                let suggestions = dict.search_topics_prefix(prefix, 10).unwrap_or_default();
+                return self.resp_dict_entry(id, term, k, None, suggestions);
+            }
+        }
+
+        self.resp_dict_entry(id, term, dict_key.unwrap_or(""), None, vec![])
+    }
+
+    fn resp_dict_entry(
+        &self,
+        id: Option<u64>,
+        term: &str,
+        module: &str,
+        entry: Option<crate::models::dictionary::DictionaryRecord>,
+        suggestions: Vec<String>,
+    ) -> String {
+        let is_digits = term.chars().all(|c| c.is_ascii_digit());
+        let is_strong_code = (term.starts_with('G')
+            || term.starts_with('g')
+            || term.starts_with('H')
+            || term.starts_with('h'))
+            && term.len() > 1
+            && term[1..].chars().all(|c| c.is_ascii_digit());
         let resp = serde_json::json!({
             "term": term,
-            "module": d_key,
+            "module": module,
             "found": entry.is_some(),
+            "is_strong_query": is_digits || is_strong_code,
             "topic": entry.as_ref().map(|e| &e.topic),
             "text": entry.as_ref().map(|e| &e.definition),
             "plain_text": entry.as_ref().map(|e| crate::terminal::render_plain_text(&e.definition)),
             "suggestions": suggestions,
         });
-
         self.resp_ok(id, resp)
     }
 
     fn handle_xref(&self, id: Option<u64>, params: &Value) -> String {
-        let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
-            Some(r) => r,
-            None => return self.resp_err(id, "Missing 'ref' parameter"),
-        };
+        let parsed = if let (Some(b_num), Some(ch)) = (
+            params.get("book_number").and_then(|v| v.as_u64()),
+            params.get("chapter").and_then(|v| v.as_u64()),
+        ) {
+            let b = crate::types::BookNumber(b_num as u16);
+            let v_start = params
+                .get("verse")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .or(Some(1));
+            crate::parsers::reference::ParsedReference {
+                book: b,
+                book_name: format!("Book {}", b_num),
+                chapter: ch as u32,
+                verse_start: v_start,
+                verse_end: v_start,
+            }
+        } else {
+            let ref_str = match params.get("ref").and_then(|v| v.as_str()) {
+                Some(r) => r,
+                None => return self.resp_err(id, "Missing 'ref' or 'book_number' parameter"),
+            };
 
-        let parsed = match parse_passage_reference(ref_str) {
-            Ok(p) => p,
-            Err(e) => return self.resp_err(id, &e.to_string()),
+            match parse_passage_reference(ref_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    let mut resolved = None;
+                    for b in self.engine.bibles.values() {
+                        if let Some(p) = self.resolve_ref_from_bible(ref_str, b.as_ref()) {
+                            resolved = Some(p);
+                            break;
+                        }
+                    }
+                    match resolved {
+                        Some(p) => p,
+                        None => return self.resp_err(id, &e.to_string()),
+                    }
+                }
+            }
         };
 
         let verse = parsed.verse_start.unwrap_or(1);
@@ -665,6 +953,68 @@ impl InteractiveServer {
         });
 
         self.resp_ok(id, resp)
+    }
+
+    fn handle_devotion(&self, id: Option<u64>, params: &Value) -> String {
+        let dev_key = params
+            .get("module")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| self.engine.devotions.keys().next().cloned());
+
+        let d_key = match dev_key {
+            Some(k) => k,
+            None => return self.resp_err(id, "No devotion modules loaded"),
+        };
+
+        let dev_reader = match self.engine.devotions.get(&d_key) {
+            Some(d) => d,
+            None => return self.resp_err(id, &format!("Devotion module '{}' not found", d_key)),
+        };
+
+        let max_days = dev_reader.max_days().unwrap_or(365);
+        let day: u32 = params
+            .get("day")
+            .and_then(|v| v.as_u64())
+            .map(|d| d as u32)
+            .unwrap_or(1);
+
+        let target_day = if max_days > 0 {
+            if day == 0 {
+                1
+            } else if day > max_days {
+                ((day - 1) % max_days) + 1
+            } else {
+                day
+            }
+        } else {
+            day.max(1)
+        };
+
+        match dev_reader.devotion_for_day(target_day) {
+            Ok(Some(rec)) => {
+                let plain = crate::terminal::render_plain_text(&rec.devotion);
+                let resp = serde_json::json!({
+                    "module": d_key,
+                    "day": target_day,
+                    "max_days": max_days,
+                    "text": rec.devotion,
+                    "plain_text": plain,
+                });
+                self.resp_ok(id, resp)
+            }
+            Ok(None) => self.resp_ok(
+                id,
+                serde_json::json!({
+                    "module": d_key,
+                    "day": target_day,
+                    "max_days": max_days,
+                    "text": null,
+                    "plain_text": null,
+                }),
+            ),
+            Err(e) => self.resp_err(id, &e.to_string()),
+        }
     }
 
     fn handle_search(&mut self, id: Option<u64>, params: &Value) -> String {

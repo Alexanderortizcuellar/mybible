@@ -1,5 +1,4 @@
-"""Main entry point for MyBible Desktop PySide6 Application.
-"""
+"""Main entry point for MyBible Desktop PySide6 Application."""
 
 import sys
 from pathlib import Path
@@ -9,10 +8,10 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from gui.main_window import MainWindow
+from gui.main_window import MainWindow  # noqa: E402
 
 
 def main():

@@ -787,23 +787,63 @@ impl CliRunner {
             .get(&dict_key)
             .ok_or_else(|| MyBibleError::ModuleNotFound(dict_key.clone()))?;
 
+        let is_digits = term.chars().all(|c| c.is_ascii_digit());
+        let is_strong_code = (term.starts_with('G')
+            || term.starts_with('g')
+            || term.starts_with('H')
+            || term.starts_with('h'))
+            && term.len() > 1
+            && term[1..].chars().all(|c| c.is_ascii_digit());
+        let is_strong_query = is_digits || is_strong_code;
+
+        // Try direct lookup or uppercase
+        let mut matched_entry = dict.get_topic(term)?;
+        let mut matched_module = dict_key.clone();
+
+        if matched_entry.is_none() {
+            let term_upper = term.to_uppercase();
+            if term_upper != term {
+                if let Some(entry) = dict.get_topic(&term_upper)? {
+                    matched_entry = Some(entry);
+                }
+            }
+        }
+
+        // If not found in requested dict and it looks like a Strong query, check Strong lexicons
+        if matched_entry.is_none() && is_strong_query {
+            if let Some(m) = engine.lookup_engine.lookup_strong(term)? {
+                matched_entry = m.article;
+                matched_module = m.dictionary_name;
+            } else {
+                let term_upper = term.to_uppercase();
+                if term_upper != term {
+                    if let Some(m) = engine.lookup_engine.lookup_strong(&term_upper)? {
+                        matched_entry = m.article;
+                        matched_module = m.dictionary_name;
+                    }
+                }
+            }
+        }
+
         if self.cli.json {
             #[derive(serde::Serialize)]
             struct DictJson {
                 term: String,
                 module: String,
                 found: bool,
+                is_strong_query: bool,
                 topic: Option<String>,
                 definition: Option<String>,
                 plain_definition: Option<String>,
                 suggestions: Vec<String>,
             }
 
-            if let Some(topic_rec) = dict.get_topic(term)? {
+            if let Some(topic_rec) = matched_entry {
                 let resp = DictJson {
                     term: term.to_string(),
-                    module: dict_key,
+                    module: matched_module,
                     found: true,
+                    is_strong_query,
                     topic: Some(topic_rec.topic),
                     definition: Some(topic_rec.definition.clone()),
                     plain_definition: Some(crate::terminal::render_plain_text(
@@ -826,6 +866,7 @@ impl CliRunner {
                 term: term.to_string(),
                 module: dict_key,
                 found: false,
+                is_strong_query,
                 topic: None,
                 definition: None,
                 plain_definition: None,
@@ -835,9 +876,9 @@ impl CliRunner {
             return Ok(());
         }
 
-        // 1. Try exact lookup
-        if let Some(topic_rec) = dict.get_topic(term)? {
-            let header = format!("📚 {} — Dictionary ({})", topic_rec.topic, dict_key);
+        // 1. Matched entry found
+        if let Some(topic_rec) = matched_entry {
+            let header = format!("📚 {} — Dictionary ({})", topic_rec.topic, matched_module);
             if use_color {
                 println!("\n{}\n", header.bright_green().bold());
             } else {
@@ -851,6 +892,12 @@ impl CliRunner {
 
         // 2. Not found: suggest topics with same prefix
         println!("Topic '{}' not found in dictionary '{}'.", term, dict_key);
+
+        if is_strong_query {
+            println!(
+                "\nTip: If searching for Strong's numbers, make sure a Strong lexicon (such as 'Strong-ES' or 'Strong') is installed:\n  mybible modules download Strong-ES"
+            );
+        }
 
         if suggest {
             let prefix = if term.len() >= 3 { &term[..3] } else { term };

@@ -4,7 +4,7 @@ and persistent search history.
 """
 
 from typing import Optional
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Signal, QUrl
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -52,7 +52,9 @@ class SearchDialog(QDialog):
         # 1. Search Query Input Row
         query_layout = QHBoxLayout()
         self.query_input = QLineEdit()
-        self.query_input.setPlaceholderText("Enter words or \"exact phrase\" (e.g. repent kingdom)...")
+        self.query_input.setPlaceholderText(
+            'Enter words or "exact phrase" (e.g. repent kingdom)...'
+        )
         self.query_input.returnPressed.connect(self.perform_search)
         query_layout.addWidget(self.query_input)
 
@@ -83,7 +85,9 @@ class SearchDialog(QDialog):
 
         filter_layout.addWidget(QLabel("<b>Scope:</b>"))
         self.scope_combo = QComboBox()
-        self.scope_combo.addItems(["Entire Bible", "Old Testament (OT)", "New Testament (NT)"])
+        self.scope_combo.addItems(
+            ["Entire Bible", "Old Testament (OT)", "New Testament (NT)"]
+        )
         filter_layout.addWidget(self.scope_combo)
 
         filter_layout.addWidget(QLabel("<b>Translation:</b>"))
@@ -106,7 +110,9 @@ class SearchDialog(QDialog):
 
         # 4. Status Bar
         self.status_label = QLabel("Enter a search term and press Search.")
-        self.status_label.setStyleSheet("color: #4a5568; font-size: 10pt; margin: 2px 0;")
+        self.status_label.setStyleSheet(
+            "color: #4a5568; font-size: 10pt; margin: 2px 0;"
+        )
         layout.addWidget(self.status_label)
 
         # 5. Results Browser
@@ -127,8 +133,9 @@ class SearchDialog(QDialog):
             if q_text:
                 self.query_input.setText(q_text)
             total = last.get("total_matches", 0)
-            hits_count = len(last.get("hits", []))
-            self.status_label.setText(f"Showing previous search results for '{q_text}' ({total} matches).")
+            self.status_label.setText(
+                f"Showing previous search results for '{q_text}' ({total} matches)."
+            )
             html = render_search_results_html(last, query_text=q_text, theme=self.theme)
             self.results_browser.setHtml(html)
 
