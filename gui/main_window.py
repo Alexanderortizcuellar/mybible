@@ -8,6 +8,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QCursor, QFont, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDockWidget,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
     QTextBrowser,
     QToolBar,
@@ -40,23 +42,29 @@ from gui.html_renderer import (
 )
 from gui.modules_dialog import ModulesDialog
 from gui.search_dialog import SearchDialog
+from gui.styles import get_theme_palette, get_theme_stylesheet
+
+
+def is_system_dark_mode() -> bool:
+    """Detects whether system OS theme is dark."""
+    pal = QApplication.palette()
+    return pal.color(pal.ColorRole.Window).value() < 128
 
 
 class MainWindow(QMainWindow):
-    """Dock-based Scripture Study Main Window."""
+    """Professional Dock-based Scripture Study Main Window."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MyBible — Scripture Study Engine")
-        self.resize(1360, 850)
-
-        # Apply global stylesheet fixing ComboBox baseline and polishing docks
-        self.apply_base_stylesheet()
+        self.setWindowTitle("MyBible — Professional Scripture Study Engine")
+        self.resize(1400, 880)
 
         # Backend client
         self.backend = RustBackendClient(self)
         self.modules_info = self.backend.get_modules()
-        self.current_theme = "light"
+
+        # Initial theme detection (match OS default if dark)
+        self.current_theme = "dark" if is_system_dark_mode() else "light"
         self.font_size = 15
 
         self.current_book_number = 470  # Matthew by default
@@ -74,59 +82,35 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_translations()
         self.load_books()
+
+        # Apply cohesive styling and palette
+        self.apply_theme(self.current_theme)
         self.load_active_chapter()
 
-    def apply_base_stylesheet(self):
-        self.setStyleSheet("""
-            QComboBox {
-                padding: 4px 26px 4px 10px;
-                min-height: 26px;
-                font-size: 13px;
-                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-                border: 1px solid #cbd5e0;
-                border-radius: 4px;
-                background: #ffffff;
-                color: #2d3748;
-            }
-            QComboBox:hover {
-                border-color: #3182ce;
-            }
-            QComboBox:focus {
-                border-color: #2b6cb0;
-            }
-            QComboBox::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 22px;
-                border-left: 1px solid #e2e8f0;
-                border-top-right-radius: 4px;
-                border-bottom-right-radius: 4px;
-            }
-            QComboBox QAbstractItemView {
-                border: 1px solid #cbd5e0;
-                background: #ffffff;
-                selection-background-color: #2b6cb0;
-                selection-color: #ffffff;
-                padding: 4px;
-            }
-            QDockWidget {
-                font-family: 'Segoe UI', sans-serif;
-                font-weight: bold;
-            }
-            QDockWidget::title {
-                background: #edf2f7;
-                padding: 6px 10px;
-                border-bottom: 1px solid #cbd5e0;
-                font-size: 12px;
-                color: #2d3748;
-            }
-            QToolBar {
-                spacing: 6px;
-                padding: 4px;
-                border-bottom: 1px solid #e2e8f0;
-                background: #f7fafc;
-            }
-        """)
+    def apply_theme(self, theme_name: str):
+        """Applies full palette, stylesheet, and renders reader content for the chosen theme."""
+        self.current_theme = theme_name
+
+        # 1. Update application palette so native controls inherit correct colors
+        pal = get_theme_palette(theme_name)
+        app = QApplication.instance()
+        if app:
+            app.setPalette(pal)
+        self.setPalette(pal)
+
+        # 2. Apply comprehensive stylesheet
+        self.setStyleSheet(get_theme_stylesheet(theme_name))
+
+        # 3. Update active theme combo without triggering loop
+        idx = 0 if theme_name == "light" else (1 if theme_name == "sepia" else 2)
+        if hasattr(self, "theme_combo") and self.theme_combo.currentIndex() != idx:
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.setCurrentIndex(idx)
+            self.theme_combo.blockSignals(False)
+
+        # 4. Re-render web content if already initialized
+        if hasattr(self, "reader_browser") and self.books_data:
+            self.load_active_chapter()
 
     def init_ui(self):
         # 1. Menu Bar
@@ -176,7 +160,7 @@ class MainWindow(QMainWindow):
         theme_menu = self.view_menu.addMenu("Reading Theme")
         for theme_key, theme_label in [("light", "Light (Day)"), ("sepia", "Sepia (Reading)"), ("dark", "Dark (Night)")]:
             act = QAction(theme_label, self)
-            act.triggered.connect(lambda _, t=theme_key: self.set_theme(t))
+            act.triggered.connect(lambda _, t=theme_key: self.apply_theme(t))
             theme_menu.addAction(act)
 
         self.view_menu.addSeparator()
@@ -218,40 +202,50 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         # Translation dropdown
-        toolbar.addWidget(QLabel(" Translation: "))
+        toolbar.addWidget(QLabel("Bible:"))
         self.bible_combo = QComboBox()
+        self.bible_combo.setFixedWidth(85)
         self.bible_combo.currentIndexChanged.connect(self.on_translation_changed)
         toolbar.addWidget(self.bible_combo)
 
         toolbar.addSeparator()
 
         # Book dropdown
-        toolbar.addWidget(QLabel(" Book: "))
+        toolbar.addWidget(QLabel("Book:"))
         self.book_combo = QComboBox()
+        self.book_combo.setFixedWidth(135)
         self.book_combo.currentIndexChanged.connect(self.on_book_combo_changed)
         toolbar.addWidget(self.book_combo)
 
         # Chapter dropdown
-        toolbar.addWidget(QLabel(" Chapter: "))
+        toolbar.addWidget(QLabel("Ch:"))
         self.chapter_combo = QComboBox()
+        self.chapter_combo.setFixedWidth(65)
         self.chapter_combo.currentIndexChanged.connect(self.on_chapter_combo_changed)
         toolbar.addWidget(self.chapter_combo)
 
         # Previous / Next Chapter buttons
-        self.prev_btn = QPushButton("◀ Prev")
+        self.prev_btn = QPushButton("◀")
+        self.prev_btn.setObjectName("navBtn")
+        self.prev_btn.setToolTip("Previous Chapter")
+        self.prev_btn.setFixedWidth(28)
         self.prev_btn.clicked.connect(self.go_prev_chapter)
         toolbar.addWidget(self.prev_btn)
 
-        self.next_btn = QPushButton("Next ▶")
+        self.next_btn = QPushButton("▶")
+        self.next_btn.setObjectName("navBtn")
+        self.next_btn.setToolTip("Next Chapter")
+        self.next_btn.setFixedWidth(28)
         self.next_btn.clicked.connect(self.go_next_chapter)
         toolbar.addWidget(self.next_btn)
 
         toolbar.addSeparator()
 
         # Subheadings selector
-        toolbar.addWidget(QLabel(" Subheadings: "))
+        toolbar.addWidget(QLabel("Headings:"))
         self.subheadings_combo = QComboBox()
-        self.subheadings_combo.addItem("Default (Stories / Embedded)", userData="default")
+        self.subheadings_combo.setFixedWidth(150)
+        self.subheadings_combo.addItem("Default (Stories)", userData="default")
         self.subheadings_combo.addItem("None (Suppress)", userData="none")
         for s in self.modules_info.get("subheadings", []):
             self.subheadings_combo.addItem(f"{s}", userData=s)
@@ -260,33 +254,49 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Search Action Button
+        # Action Buttons
         self.search_btn = QPushButton("🔍 Search")
+        self.search_btn.setObjectName("primaryBtn")
         self.search_btn.clicked.connect(self.open_search_dialog)
         toolbar.addWidget(self.search_btn)
 
-        # Module Manager Button
         self.modules_btn = QPushButton("📦 Modules")
         self.modules_btn.clicked.connect(self.open_modules_dialog)
         toolbar.addWidget(self.modules_btn)
 
-        toolbar.addSeparator()
+        self.compare_toggle_btn = QPushButton("⚖️ Compare")
+        self.compare_toggle_btn.setCheckable(True)
+        self.compare_toggle_btn.setChecked(True)
+        self.compare_toggle_btn.clicked.connect(self.toggle_compare_dock)
+        toolbar.addWidget(self.compare_toggle_btn)
+
+        # Expanding spacer
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
 
         # Theme selector
-        toolbar.addWidget(QLabel(" Theme: "))
+        toolbar.addWidget(QLabel("Theme:"))
         self.theme_combo = QComboBox()
+        self.theme_combo.setFixedWidth(90)
         self.theme_combo.addItems(["Light", "Sepia", "Dark"])
+        initial_idx = 0 if self.current_theme == "light" else (1 if self.current_theme == "sepia" else 2)
+        self.theme_combo.setCurrentIndex(initial_idx)
         self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
         toolbar.addWidget(self.theme_combo)
 
         # Font Size Controls
         self.btn_font_minus = QPushButton("A-")
+        self.btn_font_minus.setObjectName("fontBtn")
         self.btn_font_minus.setFixedWidth(30)
+        self.btn_font_minus.setToolTip("Decrease Font Size")
         self.btn_font_minus.clicked.connect(self.decrease_font_size)
         toolbar.addWidget(self.btn_font_minus)
 
         self.btn_font_plus = QPushButton("A+")
+        self.btn_font_plus.setObjectName("fontBtn")
         self.btn_font_plus.setFixedWidth(30)
+        self.btn_font_plus.setToolTip("Increase Font Size")
         self.btn_font_plus.clicked.connect(self.increase_font_size)
         toolbar.addWidget(self.btn_font_plus)
 
@@ -300,10 +310,16 @@ class MainWindow(QMainWindow):
         # --- 1. Left Dock: Books & Chapters Tree ---
         self.nav_dock = QDockWidget("📖 Books & Navigation", self)
         self.nav_dock.setObjectName("nav_dock")
+        self.nav_dock.setMinimumWidth(260)
         self.nav_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
         self.book_tree = QTreeWidget()
-        self.book_tree.setHeaderLabel("Biblical Canon")
+        self.book_tree.setColumnCount(2)
+        self.book_tree.setHeaderLabels(["Book", "Ch"])
+        self.book_tree.header().setStretchLastSection(False)
+        self.book_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.book_tree.header().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.book_tree.setColumnWidth(1, 42)
         self.book_tree.itemClicked.connect(self.on_book_tree_clicked)
         self.nav_dock.setWidget(self.book_tree)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.nav_dock)
@@ -311,18 +327,22 @@ class MainWindow(QMainWindow):
         # --- 2. Right Dock: Commentary & Footnotes ---
         self.comm_dock = QDockWidget("📝 Commentary & Footnotes", self)
         self.comm_dock.setObjectName("comm_dock")
+        self.comm_dock.setMinimumWidth(320)
 
         comm_widget = QWidget()
         comm_layout = QVBoxLayout(comm_widget)
-        comm_layout.setContentsMargins(6, 6, 6, 6)
+        comm_layout.setContentsMargins(8, 8, 8, 8)
+        comm_layout.setSpacing(6)
 
         comm_hdr = QHBoxLayout()
-        comm_hdr.addWidget(QLabel("Module:"))
+        comm_hdr.addWidget(QLabel("<b>Commentary:</b>"))
         self.comm_module_combo = QComboBox()
+        self.comm_module_combo.setMinimumWidth(140)
         for c in self.modules_info.get("commentaries", []):
             self.comm_module_combo.addItem(c)
         self.comm_module_combo.currentIndexChanged.connect(self.load_active_commentary)
         comm_hdr.addWidget(self.comm_module_combo)
+        comm_hdr.addStretch()
         comm_layout.addLayout(comm_hdr)
 
         self.comm_browser = QTextBrowser()
@@ -351,20 +371,22 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.comm_dock, self.xref_dock)
 
         # --- 4. Right Dock: Dictionary & Concordance ---
-        self.dict_dock = QDockWidget("📚 Dictionary & Concordance", self)
+        self.dict_dock = QDockWidget("📚 Dictionary & Lexicon", self)
         self.dict_dock.setObjectName("dict_dock")
 
         dict_widget = QWidget()
         dict_layout = QVBoxLayout(dict_widget)
-        dict_layout.setContentsMargins(6, 6, 6, 6)
+        dict_layout.setContentsMargins(8, 8, 8, 8)
+        dict_layout.setSpacing(6)
 
         dict_search_row = QHBoxLayout()
         self.dict_input = QLineEdit()
-        self.dict_input.setPlaceholderText("Lookup Strong # (e.g. G26, H7225) or word...")
+        self.dict_input.setPlaceholderText("Strong # (G26, H7225) or word...")
         self.dict_input.returnPressed.connect(self.lookup_dictionary_term)
         dict_search_row.addWidget(self.dict_input)
 
         self.dict_btn = QPushButton("Lookup")
+        self.dict_btn.setObjectName("primaryBtn")
         self.dict_btn.clicked.connect(self.lookup_dictionary_term)
         dict_search_row.addWidget(self.dict_btn)
         dict_layout.addLayout(dict_search_row)
@@ -388,15 +410,18 @@ class MainWindow(QMainWindow):
 
         compare_widget = QWidget()
         comp_layout = QVBoxLayout(compare_widget)
-        comp_layout.setContentsMargins(6, 6, 6, 6)
+        comp_layout.setContentsMargins(8, 8, 8, 8)
+        comp_layout.setSpacing(6)
 
         # Translation Selector Row
         self.comp_hdr = QHBoxLayout()
+        self.comp_hdr.setSpacing(12)
         self.comp_hdr.addWidget(QLabel("<b>Compare Versions:</b>"))
 
         self.comp_checkbox_container = QWidget()
         self.comp_checkbox_layout = QHBoxLayout(self.comp_checkbox_container)
         self.comp_checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        self.comp_checkbox_layout.setSpacing(10)
         self.update_compare_checkboxes()
         self.comp_hdr.addWidget(self.comp_checkbox_container)
 
@@ -419,14 +444,21 @@ class MainWindow(QMainWindow):
 
         # Activate commentary tab by default on right
         self.comm_dock.raise_()
+        self.resizeDocks([self.nav_dock], [270], Qt.Horizontal)
+
+        # Connect compare dock visibility to toolbar button
+        self.compare_dock.visibilityChanged.connect(self.compare_toggle_btn.setChecked)
 
         # Add View Menu Toggles for all docks
         for dock in [self.nav_dock, self.comm_dock, self.xref_dock, self.dict_dock, self.compare_dock]:
             self.view_menu.addAction(dock.toggleViewAction())
 
+    def toggle_compare_dock(self):
+        visible = self.compare_toggle_btn.isChecked()
+        self.compare_dock.setVisible(visible)
+
     def update_compare_checkboxes(self):
         """Populates checkboxes for all installed Bibles."""
-        # Clear existing
         for cb in self.compare_checkboxes.values():
             cb.deleteLater()
         self.compare_checkboxes.clear()
@@ -434,7 +466,6 @@ class MainWindow(QMainWindow):
         bibles = self.modules_info.get("bibles", [])
         for b in bibles:
             cb = QCheckBox(b)
-            # Default check active bible and first 1-2 other bibles
             cb.setChecked(True)
             cb.stateChanged.connect(self.load_active_comparison)
             self.comp_checkbox_layout.addWidget(cb)
@@ -455,6 +486,8 @@ class MainWindow(QMainWindow):
         self.dict_dock.show()
         self.compare_dock.show()
         self.comm_dock.raise_()
+        self.resizeDocks([self.nav_dock], [270], Qt.Horizontal)
+        self.compare_toggle_btn.setChecked(True)
         self.statusBar.showMessage("Dock layout restored to default.")
 
     # --- Loading & Data Handling ---
@@ -498,13 +531,16 @@ class MainWindow(QMainWindow):
 
         # 3. Populate Book Navigation Tree
         self.book_tree.clear()
-        ot_root = QTreeWidgetItem(self.book_tree, ["Old Testament (Tanakh)"])
-        nt_root = QTreeWidgetItem(self.book_tree, ["New Testament (B'rit Chadashah)"])
+        ot_root = QTreeWidgetItem(self.book_tree, ["Old Testament", "39"])
+        nt_root = QTreeWidgetItem(self.book_tree, ["New Testament", "27"])
         ot_root.setExpanded(True)
         nt_root.setExpanded(True)
 
         for b in self.books_data:
-            item = QTreeWidgetItem([f"{b.get('long_name', '')} ({b.get('chapter_count', 1)})"])
+            name = b.get("long_name", "")
+            ch_count = str(b.get("chapter_count", 1))
+            item = QTreeWidgetItem([name, ch_count])
+            item.setTextAlignment(1, Qt.AlignRight)
             item.setData(0, Qt.UserRole, b)
             if b.get("testament") == "ot":
                 ot_root.addChild(item)
@@ -591,14 +627,20 @@ class MainWindow(QMainWindow):
             preview = r.get("preview", "")
             items_html.append(f"""
             <div style="margin-bottom: 8px;">
-                <a href="goto:{target}" class="verse-hover" style="color: #2b6cb0; font-weight: bold; text-decoration: none;">🔗 {target}</a>
-                <div style="color: #666; font-size: {self.font_size - 2}pt;">{preview}</div>
+                <a href="goto:{target}" class="verse-hover" style="font-weight: bold; text-decoration: none;">🔗 {target}</a>
+                <div style="opacity: 0.8; font-size: {self.font_size - 2}pt;">{preview}</div>
             </div>
             """)
 
         self.xref_browser.setHtml(f"""
         <html>
-        <body style="font-family: Segoe UI, sans-serif; padding: 10px;">
+        <head>
+            <style>
+                body {{ font-family: 'Segoe UI', sans-serif; padding: 10px; }}
+                a {{ text-decoration: none; }}
+            </style>
+        </head>
+        <body>
             <h4>🔗 Cross-References for {ref}</h4>
             {"".join(items_html)}
         </body>
@@ -690,14 +732,13 @@ class MainWindow(QMainWindow):
 
         if url.startswith("goto:") or url.startswith("xref:"):
             ref = url.replace("goto:", "").replace("xref:", "").strip()
-            # Clean separators like "Exodus/6/20" -> "Exodus 6:20"
             ref = ref.replace("/", " ")
             cur_bible = self.bible_combo.currentText()
             preview = self.backend.get_verse_preview(ref, bible=cur_bible)
             if preview:
                 tooltip_html = f"""
-                <div style="font-family: Segoe UI, sans-serif; font-size: 11pt; padding: 6px; max-width: 440px;">
-                    <b style="color: #2b6cb0;">📖 {ref}</b> <span style="color: #718096; font-size: 9pt;">({cur_bible})</span><br/><br/>
+                <div style="font-family: 'Segoe UI', sans-serif; font-size: 11pt; padding: 6px; max-width: 440px;">
+                    <b style="color: #3182ce;">📖 {ref}</b> <span style="opacity: 0.7; font-size: 9pt;">({cur_bible})</span><br/><br/>
                     <span>{preview}</span>
                 </div>
                 """
@@ -713,7 +754,7 @@ class MainWindow(QMainWindow):
                 topic = entry.get("topic", term)
                 plain = (entry.get("plain_text", "") or "")[:200]
                 tooltip_html = f"""
-                <div style="font-family: Segoe UI, sans-serif; font-size: 11pt; padding: 6px; max-width: 440px;">
+                <div style="font-family: 'Segoe UI', sans-serif; font-size: 11pt; padding: 6px; max-width: 440px;">
                     <b style="color: #805ad5;">📚 {topic}</b><br/><br/>
                     <span>{plain}...</span>
                 </div>
@@ -773,7 +814,7 @@ class MainWindow(QMainWindow):
             self.dict_dock.raise_()
             self.statusBar.showMessage(f"Looked up '{term}' in {dict_module}")
         else:
-            self.dict_browser.setHtml(f"<p>No definition found for '{term}'.</p>")
+            self.dict_browser.setHtml(f"<p style='padding: 12px;'>No definition found for '{term}'.</p>")
 
     # --- Dialogs & Tools ---
 
@@ -823,17 +864,11 @@ class MainWindow(QMainWindow):
     def on_theme_changed(self):
         text = self.theme_combo.currentText().lower()
         if "sepia" in text:
-            self.current_theme = "sepia"
+            self.apply_theme("sepia")
         elif "dark" in text:
-            self.current_theme = "dark"
+            self.apply_theme("dark")
         else:
-            self.current_theme = "light"
-        self.load_active_chapter()
-
-    def set_theme(self, theme_key: str):
-        self.current_theme = theme_key
-        idx = 0 if theme_key == "light" else (1 if theme_key == "sepia" else 2)
-        self.theme_combo.setCurrentIndex(idx)
+            self.apply_theme("light")
 
     def increase_font_size(self):
         if self.font_size < 28:
