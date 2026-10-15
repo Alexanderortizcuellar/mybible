@@ -193,6 +193,15 @@ mybible modules download "RVA"
 mybible modules info "NLT"
 ```
 
+### Interactive JSON-RPC Server
+`mybible` features a high-performance interactive server daemon reading line-delimited JSON commands over `stdin` and streaming responses to `stdout`:
+
+```bash
+# Launch persistent interactive server
+mybible server
+```
+This enables sub-millisecond query responses for GUIs, editors, and web frontends with in-memory caching across all loaded modules.
+
 ### Configuration
 `mybible` saves configuration settings to `~/.mybible/config.json`.
 
@@ -213,7 +222,7 @@ mybible config set-subheadings KJV-s
 
 ## Desktop GUI Application
 
-In addition to the CLI, `mybible` includes a native desktop application in the [`gui/`](gui/) directory powered by **PySide6**. It communicates with the compiled `mybible` engine via non-blocking `QProcess` IPC:
+In addition to the CLI, `mybible` includes a native desktop study environment in the [`gui/`](gui/) directory powered by **PySide6**. It connects to the long-running `mybible server` process via non-blocking JSON-RPC IPC:
 
 ### Prerequisites & Setup
 ```bash
@@ -228,13 +237,22 @@ python gui/main.py
 ```
 
 ### Key Capabilities
-- **Scripture Reader**: Seamlessly jump across all 66 books and chapters with testament categorization, pericope headings, and Red Letter Words of Jesus.
-- **Synchronized Inspector**:
-  - **Commentary**: Chapter-by-chapter and verse-by-verse notes aligned with the active reading.
-  - **Cross-References**: Instant related Scripture references with preview snippets.
-  - **Dictionary / Lexicon**: Look up Strong's concordance numbers (`G26`, `H7225`) or theological terms with click-through navigation.
-- **Interactive Multi-Module Search**: Search across multiple translations simultaneously with full match highlighting and instant verse jumping.
-- **Integrated Module Manager**: View all loaded modules and download new translations, commentaries, or dictionaries from the 4,000+ repository without leaving the application.
+- **Flexible Dock-Based Workspace (`QDockWidget`)**:
+  - Rearrange, tabify, float, or hide panels to customize your personal study layout.
+  - Dedicated docks for **Books & Navigation**, **Commentary & Footnotes**, **Cross-References**, **Dictionary & Concordance**, and **Parallel Comparison**.
+  - One-click *Reset Default Dock Layout* in the **View** menu.
+- **Parallel Multi-Version Comparison**:
+  - Compare two or more installed Bible translations (e.g. NLT, MKJV, RVA) side-by-side verse-by-verse in real-time.
+- **Commentary Scripture Hover Tooltips**:
+  - Automatically identifies biblical references cited in commentary notes and articles (e.g. *Éxodo 6:20*, *Rom 8:28*).
+  - Hovering displays a floating rich-text preview of the referenced Scripture in your active translation.
+- **Language-Aware Module Downloader**:
+  - Automatically detects your system language (e.g. Spanish, English) and pre-selects matching modules.
+  - Explore over 4,000+ modules categorized by type (Bibles, Commentaries, Dictionaries, Cross-References, Plans, Devotions).
+  - One-click downloads with real-time background installation and instant engine reloading.
+- **Persistent Full-Text Search**:
+  - Search across all installed translations with match highlighting.
+  - Preserves search history and results across reading sessions with jump-to-verse navigation.
 
 ---
 

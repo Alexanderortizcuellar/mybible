@@ -1,15 +1,16 @@
-"""
-HTML Renderer for QTextBrowser
-Generates clean HTML and CSS formatting for Scripture, Commentary, Dictionaries, and Search Results.
+"""HTML Renderer for QTextBrowser
+Generates clean HTML and CSS formatting for Scripture, Commentary, Dictionaries,
+Parallel Bible Comparisons, and Search Results.
 """
 
+import html
 import re
 from typing import Optional
 
 THEMES = {
     "light": {
         "bg": "#ffffff",
-        "fg": "#2b2b2b",
+        "fg": "#2d3748",
         "header": "#1a365d",
         "subheading": "#2b6cb0",
         "verse_num": "#3182ce",
@@ -51,6 +52,27 @@ THEMES = {
     },
 }
 
+BIBLE_BOOK_NAMES_PATTERN = (
+    r"(?:[1-3]\s*)?(?:"
+    r"Génesis|Éxodo|Levítico|Números|Deuteronomio|Josué|Jueces|Rut|Samuel|Reyes|Crónicas|"
+    r"Esdras|Nehemías|Ester|Job|Salmo[s]?|Proverbios|Eclesiastés|Cantares|Isaías|Jeremías|"
+    r"Lamentaciones|Ezequiel|Daniel|Oseas|Joel|Amós|Abdías|Jonás|Miqueas|Nahúm|Habacuc|"
+    r"Sofonías|Hageo|Zacarías|Malaquías|Mateo|Marcos|Lucas|Juan|Hechos|Romanos|Corintios|"
+    r"Gálatas|Efesios|Filipenses|Colosenses|Tesalonicenses|Timoteo|Tito|Filemón|Hebreos|"
+    r"Santiago|Pedro|Judas|Apocalipsis|"
+    r"Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|Kings|Chronicles|"
+    r"Ezra|Nehemiah|Esther|Psalms?|Proverbs|Ecclesiastes|Song|Isaiah|Jeremiah|Lamentations|"
+    r"Ezekiel|Hosea|Amos|Obadiah|Jonah|Micah|Nahum|Habakkuk|Zephaniah|Haggai|Zechariah|"
+    r"Malachi|Matthew|Mark|Luke|John|Acts|Romans|Corinthians|Galatians|Ephesians|Philippians|"
+    r"Colossians|Thessalonians|Timothy|Titus|Philemon|Hebrews|James|Peter|Jude|Revelation|"
+    r"Gen|Exod?|Lev|Num|Deut?|Josh?|Judg?|Ruth|Sam|Kgs|Chron?|Neh|Esth?|Job|Psa?|Prov?|"
+    r"Eccl?|Isa|Jer|Lam|Ezek?|Dan|Hos|Joel|Amos|Obad?|Jon|Mic|Nah|Hab|Zeph?|Hag|Zech?|"
+    r"Mal|Matt?|Mrk|Luk|Jhn|Act|Rom|Cor|Gal|Eph|Phil?|Col|Thess?|Tim|Tit|Phlm|Heb|Jas|Pet|Rev"
+    r")\.?\s+\d+[:\.]\d+(?:[-–]\d+)?"
+)
+
+VERSE_REF_REGEX = re.compile(BIBLE_BOOK_NAMES_PATTERN, re.IGNORECASE)
+
 
 def build_css(theme_name: str = "light", font_size: int = 15) -> str:
     """Constructs CSS stylesheet corresponding to theme and font size."""
@@ -62,23 +84,28 @@ def build_css(theme_name: str = "light", font_size: int = 15) -> str:
         font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', 'Oxygen', sans-serif;
         font-size: {font_size}pt;
         line-height: 1.65;
-        margin: 16px 24px;
+        margin: 14px 20px;
     }}
     h1 {{
         color: {t['header']};
-        font-size: {int(font_size * 1.5)}pt;
+        font-size: {int(font_size * 1.45)}pt;
         border-bottom: 2px solid {t['border']};
         padding-bottom: 6px;
         margin-bottom: 16px;
     }}
+    h2, h3, h4 {{
+        color: {t['header']};
+        margin-top: 14px;
+        margin-bottom: 8px;
+    }}
     .subheading {{
         color: {t['subheading']};
         font-family: Georgia, serif;
-        font-size: {int(font_size * 1.2)}pt;
+        font-size: {int(font_size * 1.15)}pt;
         font-weight: bold;
-        margin-top: 24px;
-        margin-bottom: 10px;
-        padding: 4px 8px;
+        margin-top: 20px;
+        margin-bottom: 8px;
+        padding: 4px 10px;
         border-left: 4px solid {t['subheading']};
         background: {t['card_bg']};
     }}
@@ -104,9 +131,6 @@ def build_css(theme_name: str = "light", font_size: int = 15) -> str:
         vertical-align: super;
         padding: 0 2px;
     }}
-    .footnote-link:hover {{
-        text-decoration: underline;
-    }}
     .strong-link {{
         color: {t['strong']};
         text-decoration: none;
@@ -117,14 +141,19 @@ def build_css(theme_name: str = "light", font_size: int = 15) -> str:
         color: {t['link']};
         text-decoration: underline;
     }}
-    .hit-card {{
+    .verse-hover {{
+        color: {t['link']};
+        text-decoration: underline;
+        font-weight: 500;
+    }}
+    .hit-card, .comm-card, .compare-card {{
         background: {t['card_bg']};
         border: 1px solid {t['border']};
         border-radius: 6px;
         padding: 10px 14px;
         margin-bottom: 12px;
     }}
-    .hit-title {{
+    .hit-title, .card-title {{
         color: {t['header']};
         font-weight: bold;
         font-size: {int(font_size * 1.05)}pt;
@@ -132,11 +161,21 @@ def build_css(theme_name: str = "light", font_size: int = 15) -> str:
     }}
     .badge {{
         background: {t['subheading']};
-        color: {t['bg']};
+        color: #ffffff;
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-size: {max(8, font_size - 4)}pt;
+        font-weight: bold;
+        margin-left: 6px;
+    }}
+    .trans-badge {{
+        background: {t['border']};
+        color: {t['fg']};
         padding: 2px 6px;
         border-radius: 4px;
         font-size: {max(8, font_size - 4)}pt;
         font-weight: bold;
+        margin-right: 6px;
     }}
     .match-highlight {{
         background-color: {t['highlight']};
@@ -159,14 +198,14 @@ def clean_verse_tags_to_html(raw_text: str) -> str:
     # Words of Jesus
     text = re.sub(r"<J>(.*?)</J>", r'<span class="jesus">\1</span>', text, flags=re.DOTALL)
 
-    # Footnotes: <f>[1]</f> -> <a href="fn:1" class="footnote-link">[1]</a>
+    # Footnotes
     def replace_fn(match):
         marker = match.group(1).strip("[]")
         return f'<a href="fn:{marker}" class="footnote-link">[{marker}]</a>'
 
     text = re.sub(r"<f>(.*?)</f>", replace_fn, text)
 
-    # Strong's numbers: <S>26</S> -> <a href="dict:G26" class="strong-link">&lt;26&gt;</a>
+    # Strong's numbers
     text = re.sub(r"<S>([0-9]+)</S>", r'<a href="dict:\1" class="strong-link">&lt;\1&gt;</a>', text)
     text = re.sub(r"<S>([GH][0-9]+)</S>", r'<a href="dict:\1" class="strong-link">&lt;\1&gt;</a>', text)
 
@@ -183,6 +222,16 @@ def clean_verse_tags_to_html(raw_text: str) -> str:
     text = re.sub(r"</?(?:e|h|b|i)[^>]*>", "", text)
 
     return text
+
+
+def linkify_scripture_references(text: str) -> str:
+    """Detects Scripture passage references in commentary or text and wraps them in hoverable links."""
+    def repl(m):
+        raw_ref = m.group(0)
+        clean = raw_ref.strip("()[]., ")
+        return f'<a href="goto:{clean}" class="verse-hover" title="Hover for preview / click to jump">{raw_ref}</a>'
+
+    return VERSE_REF_REGEX.sub(repl, text)
 
 
 def render_chapter_html(data: dict, theme: str = "light", font_size: int = 15) -> str:
@@ -202,16 +251,19 @@ def render_chapter_html(data: dict, theme: str = "light", font_size: int = 15) -
         raw_text = v_item.get("text", "")
         formatted_text = clean_verse_tags_to_html(raw_text)
 
-        # Prepend any subheadings before this verse
+        # Prepend any subheadings for this verse
         if v_num in subheadings_by_verse:
-            for s_title in subheadings_by_verse[v_num]:
-                verses_html.append(f'<div class="subheading">{s_title}</div>')
+            for s in subheadings_by_verse[v_num]:
+                verses_html.append(f'<div class="subheading">{s}</div>')
 
-        # Build verse row
-        v_anchor = f'<a name="v{v_num}"></a><a href="verse:{v_num}" class="verse-num">{v_num}</a>'
-        verses_html.append(f'<div class="verse">{v_anchor} {formatted_text}</div>')
+        verses_html.append(f"""
+        <div class="verse" id="v{v_num}">
+            <a href="verse:{v_num}" class="verse-num">{v_num}</a>
+            <span>{formatted_text}</span>
+        </div>
+        """)
 
-    content = "\n".join(verses_html)
+    body_content = "\n".join(verses_html)
 
     return f"""<!DOCTYPE html>
     <html>
@@ -220,33 +272,131 @@ def render_chapter_html(data: dict, theme: str = "light", font_size: int = 15) -
         <style>{css}</style>
     </head>
     <body>
-        <h1>{ref} <span style="font-size: 0.6em; opacity: 0.7;">({bible})</span></h1>
-        {content}
+        <h1>📖 {ref} <span class="badge">{bible}</span></h1>
+        {body_content}
     </body>
     </html>
     """
 
 
-def render_search_results_html(results: dict, theme: str = "light", font_size: int = 14) -> str:
-    """Renders search results with highlights into HTML."""
+def render_commentary_html(data: dict, theme: str = "light", font_size: int = 14) -> str:
+    """Renders commentary notes with interactive hoverable Scripture references."""
     css = build_css(theme, font_size)
-    query_text = results.get("query", {}).get("text", "")
-    total = results.get("total_matches", 0)
-    hits = results.get("hits", [])
-    duration = results.get("duration_ms", 0)
+    ref = data.get("reference", "")
+    module = data.get("module", "")
+    notes = data.get("notes", [])
+
+    if not notes:
+        return f"""<!DOCTYPE html><html><head><style>{css}</style></head><body>
+        <h3>📝 {ref} — {module}</h3>
+        <p style="opacity: 0.7;">No commentary notes found for this passage.</p>
+        </body></html>"""
+
+    cards = []
+    for n in notes:
+        v_from = n.get("verse_from", 1)
+        v_to = n.get("verse_to", v_from)
+        v_badge = f"{v_from}" if v_from == v_to else f"{v_from}–{v_to}"
+        raw_text = n.get("text", "")
+        formatted_text = clean_verse_tags_to_html(raw_text)
+        linked_text = linkify_scripture_references(formatted_text)
+
+        cards.append(f"""
+        <div class="comm-card">
+            <div class="card-title">
+                <span style="color: #2b6cb0;">Verse {v_badge}</span>
+            </div>
+            <div>{linked_text}</div>
+        </div>
+        """)
+
+    return f"""<!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8"/>
+        <style>{css}</style>
+    </head>
+    <body>
+        <h3>📝 {ref} <span class="badge">{module}</span></h3>
+        {"\n".join(cards)}
+    </body>
+    </html>
+    """
+
+
+def render_compare_html(data: dict, theme: str = "light", font_size: int = 14) -> str:
+    """Renders aligned multi-translation comparison for a chapter or verse."""
+    css = build_css(theme, font_size)
+    ref = data.get("reference", "")
+    bibles = data.get("bibles", [])
+    verses = data.get("verses", [])
+
+    if not verses:
+        return f"""<!DOCTYPE html><html><head><style>{css}</style></head><body>
+        <h3>⚖️ Bible Comparison — {ref}</h3>
+        <p style="opacity: 0.7;">No comparison verses available.</p>
+        </body></html>"""
+
+    cards = []
+    for v_item in verses:
+        v_num = v_item.get("verse", 1)
+        trans_rows = []
+        for t in v_item.get("translations", []):
+            b_name = t.get("bible", "")
+            raw_text = t.get("text", "")
+            cleaned = clean_verse_tags_to_html(raw_text)
+            trans_rows.append(f"""
+            <div style="margin-bottom: 6px; padding: 4px 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                <span class="trans-badge">{b_name}</span>
+                <span>{cleaned}</span>
+            </div>
+            """)
+
+        cards.append(f"""
+        <div class="compare-card">
+            <div class="card-title">
+                <a href="verse:{v_num}" class="verse-num" style="font-size: 1.1em;">Verse {v_num}</a>
+            </div>
+            {"\n".join(trans_rows)}
+        </div>
+        """)
+
+    return f"""<!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8"/>
+        <style>{css}</style>
+    </head>
+    <body>
+        <h3>⚖️ Compare Translations — {ref}</h3>
+        <p style="opacity: 0.8; font-size: 0.9em; margin-bottom: 14px;">Comparing: <b>{", ".join(bibles)}</b></p>
+        {"\n".join(cards)}
+    </body>
+    </html>
+    """
+
+
+def render_search_results_html(
+    data: dict, query_text: str, theme: str = "light", font_size: int = 14
+) -> str:
+    """Renders full-text search results with matched term highlights into HTML."""
+    css = build_css(theme, font_size)
+    total = data.get("total_matches", 0)
+    duration = data.get("duration_ms", 0)
+    hits = data.get("hits", [])
 
     cards = []
     for hit in hits:
-        ref = f"{hit.get('book_name', '')} {hit.get('chapter', 1)}:{hit.get('verse', 1)}"
         module = hit.get("bible_module", "")
-        plain = hit.get("plain_text", "").strip()
+        ref = hit.get("reference", hit.get("format_reference", ""))
+        if not ref:
+            ref = f"{hit.get('book_name', '')} {hit.get('chapter', 1)}:{hit.get('verse', 1)}"
 
-        # Highlight matches using spans
+        plain = hit.get("plain_text", "")
         matches = hit.get("matches", [])
+
         if matches:
-            # Sort spans
-            sorted_spans = sorted(matches, key=lambda s: s.get("start", 0))
-            # Merge
+            sorted_spans = sorted(matches, key=lambda x: x.get("start", 0))
             merged = []
             for s in sorted_spans:
                 st, en = s.get("start", 0), s.get("end", 0)
@@ -285,7 +435,7 @@ def render_search_results_html(results: dict, theme: str = "light", font_size: i
         <style>{css}</style>
     </head>
     <body>
-        <h2>Search Results for "{query_text}"</h2>
+        <h2>Search Results for "{html.escape(query_text)}"</h2>
         <p style="opacity: 0.8; font-size: 0.9em;">Found {total} matching verses in {duration}ms (showing {len(hits)})</p>
         {content}
     </body>
@@ -298,7 +448,7 @@ def render_dict_html(data: dict, theme: str = "light", font_size: int = 14) -> s
     css = build_css(theme, font_size)
     term = data.get("term", "")
     module = data.get("module", "")
-    definition = data.get("definition", "")
+    text = data.get("text", "") or data.get("definition", "")
 
     if not data.get("found", False):
         suggestions = data.get("suggestions", [])
@@ -311,6 +461,9 @@ def render_dict_html(data: dict, theme: str = "light", font_size: int = 14) -> s
         {sug_html}
         </body></html>"""
 
+    # Linkify scriptures in definition
+    linked_text = linkify_scripture_references(text)
+
     return f"""<!DOCTYPE html>
     <html>
     <head>
@@ -319,7 +472,7 @@ def render_dict_html(data: dict, theme: str = "light", font_size: int = 14) -> s
     </head>
     <body>
         <h2>📚 {term} <span class="badge">{module}</span></h2>
-        <div>{definition}</div>
+        <div>{linked_text}</div>
     </body>
     </html>
     """

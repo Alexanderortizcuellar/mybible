@@ -163,6 +163,9 @@ pub enum Commands {
     /// View or edit CLI configuration
     #[command(subcommand)]
     Config(ConfigCommands),
+
+    /// Run an interactive JSON-RPC server on stdin/stdout for desktop GUIs and applications
+    Server,
 }
 
 #[derive(Subcommand, Debug, Clone)]

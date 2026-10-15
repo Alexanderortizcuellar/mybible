@@ -1,6 +1,6 @@
-"""
-Search Dialog for MyBible GUI
-Allows searching across single, multiple, or all translations with instant passage navigation.
+"""Search Dialog for MyBible GUI
+Allows searching across single, multiple, or all translations with instant passage navigation
+and persistent search history.
 """
 
 from typing import Optional
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QTextBrowser,
-    QCheckBox,
     QProgressBar,
 )
 
@@ -23,7 +22,7 @@ from gui.html_renderer import render_search_results_html
 
 
 class SearchDialog(QDialog):
-    """Interactive Bible search dialog."""
+    """Interactive Bible search dialog with persistent state."""
 
     verseSelected = Signal(str, int, int)  # book_name, chapter, verse
 
@@ -40,10 +39,12 @@ class SearchDialog(QDialog):
         self.installed_bibles = installed_bibles
         self.current_bible = current_bible
         self.theme = theme
+        self.last_results: Optional[dict] = None
 
         self.setWindowTitle("Search Scripture — MyBible")
-        self.resize(800, 650)
+        self.resize(850, 650)
         self.init_ui()
+        self.restore_last_search()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -56,6 +57,18 @@ class SearchDialog(QDialog):
         query_layout.addWidget(self.query_input)
 
         self.search_btn = QPushButton("Search")
+        self.search_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2b6cb0;
+                color: white;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3182ce;
+            }
+        """)
         self.search_btn.clicked.connect(self.perform_search)
         query_layout.addWidget(self.search_btn)
         layout.addLayout(query_layout)
@@ -63,22 +76,21 @@ class SearchDialog(QDialog):
         # 2. Options Filter Row
         filter_layout = QHBoxLayout()
 
-        filter_layout.addWidget(QLabel("Mode:"))
+        filter_layout.addWidget(QLabel("<b>Mode:</b>"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["All Words (AND)", "Exact Phrase", "Any Word (OR)"])
         filter_layout.addWidget(self.mode_combo)
 
-        filter_layout.addWidget(QLabel("Scope:"))
+        filter_layout.addWidget(QLabel("<b>Scope:</b>"))
         self.scope_combo = QComboBox()
         self.scope_combo.addItems(["Entire Bible", "Old Testament (OT)", "New Testament (NT)"])
         filter_layout.addWidget(self.scope_combo)
 
-        filter_layout.addWidget(QLabel("Translation:"))
+        filter_layout.addWidget(QLabel("<b>Translation:</b>"))
         self.bible_combo = QComboBox()
         self.bible_combo.addItem("All Translations", userData="all")
         for b in self.installed_bibles:
             self.bible_combo.addItem(b, userData=b)
-        # Select current bible by default
         idx = self.bible_combo.findData(self.current_bible)
         if idx >= 0:
             self.bible_combo.setCurrentIndex(idx)
@@ -94,6 +106,7 @@ class SearchDialog(QDialog):
 
         # 4. Status Bar
         self.status_label = QLabel("Enter a search term and press Search.")
+        self.status_label.setStyleSheet("color: #4a5568; font-size: 10pt; margin: 2px 0;")
         layout.addWidget(self.status_label)
 
         # 5. Results Browser
@@ -101,6 +114,23 @@ class SearchDialog(QDialog):
         self.results_browser.setOpenLinks(False)
         self.results_browser.anchorClicked.connect(self.on_link_clicked)
         layout.addWidget(self.results_browser)
+
+    def restore_last_search(self):
+        """Restores cached search results from backend memory if available."""
+        if self.last_results:
+            return
+
+        last = self.backend.get_last_search()
+        if last and last.get("hits"):
+            self.last_results = last
+            q_text = last.get("query", "")
+            if q_text:
+                self.query_input.setText(q_text)
+            total = last.get("total_matches", 0)
+            hits_count = len(last.get("hits", []))
+            self.status_label.setText(f"Showing previous search results for '{q_text}' ({total} matches).")
+            html = render_search_results_html(last, query_text=q_text, theme=self.theme)
+            self.results_browser.setHtml(html)
 
     def perform_search(self):
         query = self.query_input.text().strip()
@@ -130,7 +160,6 @@ class SearchDialog(QDialog):
         self.progress_bar.setVisible(True)
         self.search_btn.setEnabled(False)
 
-        # Execute search via QProcess wrapper
         results = self.backend.search_bible(
             query=query,
             bible=bible,
@@ -146,29 +175,29 @@ class SearchDialog(QDialog):
         if not results:
             self.status_label.setText(f"No results found for '{query}'.")
             self.results_browser.setHtml(
-                f"<p style='padding: 20px; font-size: 14pt;'>No matching verses found for <b>{query}</b>.</p>"
+                f"<div style='padding: 24px; font-family: Segoe UI, sans-serif; font-size: 13pt;'>No matching verses found for <b>{query}</b>.</div>"
             )
             return
 
+        self.last_results = results
         total = results.get("total_matches", 0)
         duration = results.get("duration_ms", 0)
         hits_count = len(results.get("hits", []))
 
         self.status_label.setText(
-            f"Found {total} matching verses in {duration}ms (showing {hits_count})."
+            f"Found {total} matching verses in {duration}ms (showing top {hits_count})."
         )
 
-        html = render_search_results_html(results, theme=self.theme)
+        html = render_search_results_html(results, query_text=query, theme=self.theme)
         self.results_browser.setHtml(html)
 
     def on_link_clicked(self, qurl: QUrl):
         url = qurl.toString()
         if url.startswith("goto:"):
-            # Format: goto:BookName/Chapter/Verse
             parts = url.replace("goto:", "").split("/")
             if len(parts) >= 3:
                 book = parts[0]
                 chapter = int(parts[1])
                 verse = int(parts[2])
                 self.verseSelected.emit(book, chapter, verse)
-                self.accept()
+                self.hide()

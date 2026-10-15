@@ -88,7 +88,13 @@ impl CliRunner {
             Commands::Devotion { module, day } => {
                 self.handle_devotion(module.as_deref(), *day, use_color)
             }
+            Commands::Server => self.handle_server(),
         }
+    }
+
+    fn handle_server(&self) -> Result<()> {
+        let mut server = crate::cli::server::InteractiveServer::new(self.data_dir.clone());
+        server.run()
     }
 
     fn init_engine(&self) -> Result<MyBibleEngine> {

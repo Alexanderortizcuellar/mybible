@@ -1,6 +1,6 @@
-"""
-MyBible Backend Client
-Communicates with the compiled Rust 'mybible' binary via QProcess.
+"""MyBible Backend Client
+Communicates with the persistent Rust 'mybible server' process via QProcess
+using line-delimited JSON RPC.
 """
 
 import json
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QByteArray, QObject, QProcess, Signal
 
 
 def find_mybible_binary() -> str:
@@ -23,12 +23,22 @@ def find_mybible_binary() -> str:
         return str(root_exe)
 
     # 2. target/release
-    release_exe = base_dir / "target" / "release" / ("mybible.exe" if sys.platform == "win32" else "mybible")
+    release_exe = (
+        base_dir
+        / "target"
+        / "release"
+        / ("mybible.exe" if sys.platform == "win32" else "mybible")
+    )
     if release_exe.exists():
         return str(release_exe)
 
     # 3. target/debug
-    debug_exe = base_dir / "target" / "debug" / ("mybible.exe" if sys.platform == "win32" else "mybible")
+    debug_exe = (
+        base_dir
+        / "target"
+        / "debug"
+        / ("mybible.exe" if sys.platform == "win32" else "mybible")
+    )
     if debug_exe.exists():
         return str(debug_exe)
 
@@ -43,46 +53,94 @@ def find_mybible_binary() -> str:
 
 
 class RustBackendClient(QObject):
-    """Client wrapping the Rust backend CLI with QProcess."""
+    """Client communicating with the long-running Rust server process."""
+
+    serverReady = Signal()
+    serverError = Signal(str)
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self.binary_path = find_mybible_binary()
+        self.process: Optional[QProcess] = None
+        self._request_counter = 0
+        self._buffer = QByteArray()
+        self.start_server()
 
-    def run_sync(self, args: list[str], timeout_ms: int = 15000) -> tuple[int, str, str]:
-        """Runs a command synchronously using QProcess and returns (exit_code, stdout, stderr)."""
-        process = QProcess()
-        process.setProgram(self.binary_path)
-        process.setArguments(args)
-        process.start()
+    def start_server(self):
+        """Starts the persistent background server process."""
+        if self.process and self.process.state() != QProcess.NotRunning:
+            return
 
-        if not process.waitForFinished(timeout_ms):
-            process.kill()
-            return -1, "", "Process timed out"
+        self.process = QProcess(self)
+        self.process.setProgram(self.binary_path)
+        self.process.setArguments(["server"])
+        self.process.setProcessChannelMode(QProcess.SeparateChannels)
+        self.process.start()
 
-        exit_code = process.exitCode()
-        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
-        return exit_code, stdout, stderr
+        if not self.process.waitForStarted(5000):
+            err = self.process.errorString()
+            print(f"Failed to start mybible server: {err}", file=sys.stderr)
+            self.serverError.emit(err)
 
-    def run_json(self, args: list[str]) -> Optional[dict]:
-        """Runs command with --json and parses JSON output."""
-        full_args = ["--json"] + args
-        exit_code, stdout, stderr = self.run_sync(full_args)
-        if exit_code != 0:
-            print(f"Backend error: {stderr}", file=sys.stderr)
-            return None
-        try:
-            return json.loads(stdout.strip())
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse JSON: {e}\nRaw output: {stdout[:300]}", file=sys.stderr)
-            return None
+    def is_alive(self) -> bool:
+        return self.process is not None and self.process.state() == QProcess.Running
+
+    def send_request(self, method: str, params: Optional[dict] = None, timeout_ms: int = 15000) -> Optional[dict]:
+        """Sends a JSON RPC request to the interactive server and waits for the matching response."""
+        if not self.is_alive():
+            self.start_server()
+            if not self.is_alive():
+                return None
+
+        self._request_counter += 1
+        req_id = self._request_counter
+        payload = {
+            "id": req_id,
+            "method": method,
+            "params": params or {},
+        }
+
+        req_bytes = (json.dumps(payload) + "\n").encode("utf-8")
+        self.process.write(req_bytes)
+        self.process.waitForBytesWritten(3000)
+
+        # Read line from server stdout
+        start_time = 0
+        while self.is_alive():
+            if self.process.canReadLine():
+                raw_line = bytes(self.process.readLine()).decode("utf-8", errors="replace").strip()
+                if not raw_line:
+                    continue
+                try:
+                    resp = json.loads(raw_line)
+                    if resp.get("id") == req_id:
+                        if resp.get("success"):
+                            return resp.get("data")
+                        else:
+                            print(f"Server error for {method}: {resp.get('error')}", file=sys.stderr)
+                            return None
+                except json.JSONDecodeError as e:
+                    print(f"JSON decode error: {e} | line: {raw_line[:120]}", file=sys.stderr)
+            else:
+                if not self.process.waitForReadyRead(timeout_ms):
+                    print(f"Timeout waiting for server response to {method} (id={req_id})", file=sys.stderr)
+                    return None
+
+        return None
+
+    def close(self):
+        """Cleanly terminates the server process."""
+        if self.process and self.process.state() != QProcess.NotRunning:
+            self.process.terminate()
+            if not self.process.waitForFinished(1000):
+                self.process.kill()
+                self.process.waitForFinished(500)
 
     # --- High-level API Methods ---
 
     def get_modules(self) -> dict:
         """Retrieves list of all locally installed modules grouped by category."""
-        data = self.run_json(["modules", "list"])
+        data = self.send_request("status")
         return data or {
             "bibles": [],
             "commentaries": [],
@@ -96,104 +154,129 @@ class RustBackendClient(QObject):
 
     def get_books(self, bible: Optional[str] = None) -> list[dict]:
         """Retrieves books list for a translation with chapter counts."""
-        args = ["books"]
+        params = {}
         if bible:
-            args.extend(["-b", bible])
-        data = self.run_json(args)
-        return data if isinstance(data, list) else []
+            params["bible"] = bible
+        data = self.send_request("books", params)
+        if data and "books" in data:
+            return data["books"]
+        return []
 
-    def read_passage(
+    def get_passage(
         self,
         reference: str,
         bible: Optional[str] = None,
-        subheadings: Optional[str] = None,
-        no_subheadings: bool = False,
+        subheadings: bool = True,
         footnotes: bool = True,
         xrefs: bool = True,
+        subheadings_module: Optional[str] = None,
     ) -> Optional[dict]:
-        """Reads a Bible passage or chapter."""
-        args = ["read", reference]
+        """Reads a Bible passage."""
+        params = {
+            "ref": reference,
+            "subheadings": subheadings,
+            "footnotes": footnotes,
+            "xrefs": xrefs,
+        }
         if bible:
-            args.extend(["-b", bible])
-        if subheadings:
-            args.extend(["-s", subheadings])
-        if no_subheadings:
-            args.append("--no-subheadings")
-        if footnotes:
-            args.append("--footnotes")
-        if xrefs:
-            args.append("--xrefs")
-        return self.run_json(args)
+            params["bible"] = bible
+        if subheadings_module:
+            params["subheadings_module"] = subheadings_module
+
+        return self.send_request("read", params)
+
+    def get_compare(self, reference: str, bibles: list[str]) -> Optional[dict]:
+        """Retrieves parallel verses aligned for multiple Bible translations."""
+        params = {
+            "ref": reference,
+            "bibles": bibles,
+        }
+        return self.send_request("compare", params)
+
+    def get_verse_preview(self, reference: str, bible: Optional[str] = None) -> Optional[str]:
+        """Retrieves plain-text preview of a verse (for tooltips and references)."""
+        params = {"ref": reference}
+        if bible:
+            params["bible"] = bible
+        data = self.send_request("preview", params)
+        if data:
+            return data.get("text")
+        return None
+
+    def get_commentary(
+        self, reference: str, module: Optional[str] = None
+    ) -> Optional[dict]:
+        """Retrieves commentary notes for a passage."""
+        params = {"ref": reference}
+        if module:
+            params["module"] = module
+        return self.send_request("commentary", params)
+
+    def get_dict_entry(
+        self, term: str, module: Optional[str] = None
+    ) -> Optional[dict]:
+        """Looks up a word or Strong's Concordance number."""
+        params = {"term": term}
+        if module:
+            params["module"] = module
+        return self.send_request("dict", params)
+
+    def get_cross_references(self, reference: str) -> Optional[dict]:
+        """Retrieves cross-references for a verse."""
+        return self.send_request("xref", {"ref": reference})
 
     def search_bible(
         self,
         query: str,
         bible: Optional[str] = None,
+        bibles: Optional[list[str]] = None,
         all_bibles: bool = False,
-        book: Optional[str] = None,
         testament: Optional[str] = None,
         mode: str = "all",
-        limit: int = 50,
+        limit: int = 100,
+        case_sensitive: bool = False,
+        match_accents: bool = False,
     ) -> Optional[dict]:
-        """Executes search across Bible module(s)."""
-        args = ["search", query, "-m", mode, "-l", str(limit)]
-        if all_bibles:
-            args.append("--all")
+        """Executes full-text search across installed Bible modules."""
+        params = {
+            "query": query,
+            "mode": mode,
+            "limit": limit,
+            "case_sensitive": case_sensitive,
+            "match_accents": match_accents,
+            "all_bibles": all_bibles,
+        }
+        if bibles:
+            params["bibles"] = bibles
         elif bible:
-            args.extend(["-b", bible])
-        if book:
-            args.extend(["-B", book])
+            params["bible"] = bible
         if testament:
-            args.extend(["-t", testament])
-        return self.run_json(args)
+            params["testament"] = testament
 
-    def get_commentary(self, reference: str, module: Optional[str] = None) -> Optional[dict]:
-        """Retrieves commentary notes for a reference."""
-        args = ["commentary", reference]
-        if module:
-            args.extend(["-m", module])
-        return self.run_json(args)
+        return self.send_request("search", params)
 
-    def get_dict_entry(self, term: str, module: Optional[str] = None) -> Optional[dict]:
-        """Retrieves dictionary entry for a Strong's code or word topic."""
-        args = ["dict", term]
-        if module:
-            args.extend(["-m", module])
-        return self.run_json(args)
+    def get_last_search(self) -> Optional[dict]:
+        """Retrieves persistent results from the last executed search."""
+        return self.send_request("last_search")
 
-    def get_cross_references(self, reference: str) -> Optional[dict]:
-        """Retrieves cross-references for a verse."""
-        return self.run_json(["xref", reference])
-
-    def search_repository(self, query: str, language: Optional[str] = None) -> list[dict]:
-        """Searches the online module catalog."""
-        args = ["modules", "search", query]
-        if language:
-            args.extend(["-l", language])
-        data = self.run_json(args)
-        return data if isinstance(data, list) else []
-
-    def start_download(
+    def get_catalog(
         self,
-        abbrev: str,
-        on_output: Callable[[str], None],
-        on_finished: Callable[[int], None],
-    ) -> QProcess:
-        """Starts asynchronous module download process with live output streaming."""
-        process = QProcess(self)
-        process.setProgram(self.binary_path)
-        process.setArguments(["modules", "download", abbrev])
+        query: str = "",
+        language: Optional[str] = None,
+        mod_type: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Retrieves the official repository catalog with language breakdown."""
+        params = {
+            "query": query,
+            "language": language or "all",
+            "mod_type": mod_type or "all",
+        }
+        return self.send_request("catalog", params)
 
-        def handle_stdout():
-            text = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
-            on_output(text)
+    def download_module(self, abbreviation: str) -> Optional[dict]:
+        """Downloads and loads a module from the repository catalog."""
+        return self.send_request("download", {"abbr": abbreviation}, timeout_ms=60000)
 
-        def handle_stderr():
-            text = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
-            on_output(text)
-
-        process.readyReadStandardOutput.connect(handle_stdout)
-        process.readyReadStandardError.connect(handle_stderr)
-        process.finished.connect(on_finished)
-        process.start()
-        return process
+    def reload_modules(self) -> Optional[dict]:
+        """Reloads all installed modules."""
+        return self.send_request("reload")
