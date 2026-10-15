@@ -6,3 +6,6 @@ cache/
 *.exe
 *.SQLite3-journal
 *.db-journal
+__pycache__/
+*.py[cod]
+*$py.class

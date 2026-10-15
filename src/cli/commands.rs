@@ -16,6 +16,10 @@ pub struct Cli {
     #[arg(long = "no-color", global = true)]
     pub no_color: bool,
 
+    /// Output results as structured JSON (for GUIs, scripts, and frontends)
+    #[arg(long = "json", global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -46,6 +50,13 @@ pub enum Commands {
         /// Disable section subheadings
         #[arg(long = "no-subheadings")]
         no_subheadings: bool,
+    },
+
+    /// List books and chapters in a Bible translation (e.g. 'mybible books -b NLT')
+    Books {
+        /// Bible translation abbreviation (defaults to active or first loaded Bible)
+        #[arg(short = 'b', long = "bible")]
+        bible: Option<String>,
     },
 
     /// Search for words, phrases, or Strong's numbers in Bible translations (e.g. 'mybible search "kingdom of God"')

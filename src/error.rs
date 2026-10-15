@@ -13,6 +13,9 @@ pub enum MyBibleError {
     #[error("Zip archive error: {0}")]
     Zip(#[from] zip::result::ZipError),
 
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("Invalid module format: {0}")]
     InvalidFormat(String),
 

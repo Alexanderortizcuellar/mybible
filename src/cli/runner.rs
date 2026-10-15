@@ -50,6 +50,7 @@ impl CliRunner {
                 *no_subheadings,
                 use_color,
             ),
+            Commands::Books { bible } => self.handle_books(bible.as_deref(), use_color),
             Commands::Search {
                 query,
                 bible,
@@ -152,14 +153,6 @@ impl CliRunner {
             .get(&bible_key)
             .ok_or_else(|| MyBibleError::ModuleNotFound(bible_key.clone()))?;
 
-        // Print header
-        let header = format!("📖 {} ({})", parsed.display_string(), bible_key);
-        if use_color {
-            println!("\n{}\n", header.bright_cyan().bold());
-        } else {
-            println!("\n{}\n", header);
-        }
-
         // Determine range of verses to read
         let (v_start, v_end) = match (parsed.verse_start, parsed.verse_end) {
             (Some(s), Some(e)) => (s, e),
@@ -169,6 +162,151 @@ impl CliRunner {
                 (1, count)
             }
         };
+
+        if self.cli.json {
+            #[derive(serde::Serialize)]
+            struct JsonReadResponse {
+                reference: String,
+                book_number: u16,
+                book_name: String,
+                chapter: u32,
+                verse_start: u32,
+                verse_end: u32,
+                bible: String,
+                subheadings: Vec<JsonSubheading>,
+                verses: Vec<JsonVerse>,
+            }
+
+            #[derive(serde::Serialize)]
+            struct JsonSubheading {
+                verse: u32,
+                title: String,
+            }
+
+            #[derive(serde::Serialize)]
+            struct JsonVerse {
+                verse: u32,
+                text: String,
+                plain_text: String,
+                footnotes: Vec<JsonFootnote>,
+                cross_references: Vec<String>,
+            }
+
+            #[derive(serde::Serialize)]
+            struct JsonFootnote {
+                marker: Option<String>,
+                text: String,
+            }
+
+            let mut json_subheadings = Vec::new();
+            let mut json_verses = Vec::new();
+
+            for v in v_start..=v_end {
+                if !no_subheadings {
+                    let mut subs = Vec::new();
+                    if let Some(ref sub_name) = engine.active_subheadings {
+                        if let Some(sub_reader) = engine.subheadings.get(sub_name) {
+                            if let Ok(s) =
+                                sub_reader.subheadings_for_verse(parsed.book, parsed.chapter, v)
+                            {
+                                subs = s;
+                            }
+                        }
+                    }
+                    if subs.is_empty() {
+                        if let Ok(stories) = bible.stories_for_verse(parsed.book, parsed.chapter, v)
+                        {
+                            for s in stories {
+                                subs.push(crate::models::subheading::SubheadingRecord {
+                                    book_number: s.book_number,
+                                    chapter: s.chapter,
+                                    verse: s.verse,
+                                    order_if_several: s.order_if_several,
+                                    subheading: s.title,
+                                });
+                            }
+                        }
+                    }
+                    for s in subs {
+                        json_subheadings.push(JsonSubheading {
+                            verse: v,
+                            title: crate::terminal::render_subheading(&s.subheading, false),
+                        });
+                    }
+                }
+
+                if let Some(verse_rec) = bible.verse(parsed.book, parsed.chapter, v)? {
+                    let mut fns = Vec::new();
+                    if show_footnotes {
+                        if let Some(comm_reader) = engine.get_active_commentary() {
+                            if comm_reader.is_footnotes() {
+                                if let Ok(notes) = comm_reader.commentaries_for_verse(
+                                    parsed.book,
+                                    parsed.chapter,
+                                    v,
+                                ) {
+                                    for n in notes {
+                                        fns.push(JsonFootnote {
+                                            marker: n.marker,
+                                            text: crate::terminal::render_plain_text(&n.text),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let mut xref_list = Vec::new();
+                    if show_xrefs {
+                        if let Some(xref_name) = &engine.active_cross_references {
+                            if let Some(xref_reader) = engine.cross_references.get(xref_name) {
+                                if let Ok(refs) =
+                                    xref_reader.references_for_verse(parsed.book, parsed.chapter, v)
+                                {
+                                    for r in refs {
+                                        xref_list.push(r.format_target());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let ast = crate::parsers::verse_text::parse_verse_text(&verse_rec.text);
+                    let plain = crate::parsers::verse_text::nodes_to_plain_text(&ast);
+
+                    json_verses.push(JsonVerse {
+                        verse: v,
+                        text: verse_rec.text,
+                        plain_text: plain,
+                        footnotes: fns,
+                        cross_references: xref_list,
+                    });
+                }
+            }
+
+            let resp = JsonReadResponse {
+                reference: parsed.display_string(),
+                book_number: parsed.book.0,
+                book_name: parsed.book_name.clone(),
+                chapter: parsed.chapter,
+                verse_start: v_start,
+                verse_end: v_end,
+                bible: bible_key,
+                subheadings: json_subheadings,
+                verses: json_verses,
+            };
+
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            return Ok(());
+        }
+
+        // Print terminal header
+        let header = format!("📖 {} ({})", parsed.display_string(), bible_key);
+        if use_color {
+            println!("\n{}\n", header.bright_cyan().bold());
+        } else {
+            println!("\n{}\n", header);
+        }
 
         for v in v_start..=v_end {
             // Check for subheadings before this verse
@@ -270,6 +408,80 @@ impl CliRunner {
         Ok(())
     }
 
+    // --- BOOKS COMMAND ---
+    fn handle_books(&self, bible_arg: Option<&str>, use_color: bool) -> Result<()> {
+        let engine = self.init_engine()?;
+        let bible_key = bible_arg
+            .map(|s| s.to_string())
+            .or_else(|| self.config.default_bible.clone())
+            .or_else(|| engine.active_bible.clone())
+            .or_else(|| engine.bibles.keys().next().cloned())
+            .ok_or_else(|| MyBibleError::InvalidFormat("No Bible module loaded".to_string()))?;
+
+        let bible = engine.get_bible(&bible_key).ok_or_else(|| {
+            MyBibleError::InvalidFormat(format!("Bible '{}' not found", bible_key))
+        })?;
+
+        let books = bible.present_books()?;
+
+        #[derive(serde::Serialize)]
+        struct BookDto {
+            book_number: u16,
+            short_name: String,
+            long_name: String,
+            testament: String,
+            chapter_count: u32,
+        }
+
+        let mut book_dtos = Vec::new();
+        for b in &books {
+            let canon = crate::books::find_book_by_number(b.book_number);
+            let testament = canon
+                .map(|c| format!("{:?}", c.testament))
+                .unwrap_or_else(|| "Unknown".to_string());
+            let ch_count = bible.chapter_count(b.book_number).unwrap_or(1);
+            book_dtos.push(BookDto {
+                book_number: b.book_number.0,
+                short_name: b.short_name.clone(),
+                long_name: b.display_title().to_string(),
+                testament,
+                chapter_count: ch_count,
+            });
+        }
+
+        if self.cli.json {
+            println!("{}", serde_json::to_string_pretty(&book_dtos)?);
+            return Ok(());
+        }
+
+        let header = format!("📚 Books in {} ({} books):", bible_key, book_dtos.len());
+        if use_color {
+            println!("\n{}\n", header.bright_cyan().bold());
+        } else {
+            println!("\n{}\n", header);
+        }
+
+        for b in &book_dtos {
+            if use_color {
+                println!(
+                    "  {:>3}: {:<16} ({:<5}) - {} chapters [{}]",
+                    b.book_number,
+                    b.long_name.bright_yellow(),
+                    b.short_name,
+                    b.chapter_count,
+                    b.testament.dimmed()
+                );
+            } else {
+                println!(
+                    "  {:>3}: {:<16} ({:<5}) - {} chapters [{}]",
+                    b.book_number, b.long_name, b.short_name, b.chapter_count, b.testament
+                );
+            }
+        }
+        println!();
+        Ok(())
+    }
+
     // --- SEARCH COMMAND ---
     #[allow(clippy::too_many_arguments)]
     fn handle_search(
@@ -341,6 +553,11 @@ impl CliRunner {
 
         // 5. Execute search
         let results = engine.search(&query, &modules_to_search)?;
+
+        if self.cli.json {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+            return Ok(());
+        }
 
         // 6. Handle no results
         if results.total_matches == 0 {
@@ -459,6 +676,45 @@ impl CliRunner {
             None => comm.commentaries_for_chapter(parsed.book, parsed.chapter)?,
         };
 
+        if self.cli.json {
+            #[derive(serde::Serialize)]
+            struct CommItemDto {
+                chapter_from: u32,
+                verse_from: u32,
+                chapter_to: u32,
+                verse_to: u32,
+                text: String,
+                plain_text: String,
+            }
+
+            #[derive(serde::Serialize)]
+            struct CommJson {
+                reference: String,
+                module: String,
+                notes: Vec<CommItemDto>,
+            }
+
+            let dtos = notes
+                .iter()
+                .map(|n| CommItemDto {
+                    chapter_from: n.chapter_number_from,
+                    verse_from: n.verse_number_from,
+                    chapter_to: n.chapter_number_to.unwrap_or(n.chapter_number_from),
+                    verse_to: n.verse_number_to.unwrap_or(n.verse_number_from),
+                    text: n.text.clone(),
+                    plain_text: crate::terminal::render_plain_text(&n.text),
+                })
+                .collect();
+
+            let resp = CommJson {
+                reference: parsed.display_string(),
+                module: comm_key,
+                notes: dtos,
+            };
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            return Ok(());
+        }
+
         let header = format!(
             "📝 Commentary on {} ({})",
             parsed.display_string(),
@@ -525,6 +781,54 @@ impl CliRunner {
             .get(&dict_key)
             .ok_or_else(|| MyBibleError::ModuleNotFound(dict_key.clone()))?;
 
+        if self.cli.json {
+            #[derive(serde::Serialize)]
+            struct DictJson {
+                term: String,
+                module: String,
+                found: bool,
+                topic: Option<String>,
+                definition: Option<String>,
+                plain_definition: Option<String>,
+                suggestions: Vec<String>,
+            }
+
+            if let Some(topic_rec) = dict.get_topic(term)? {
+                let resp = DictJson {
+                    term: term.to_string(),
+                    module: dict_key,
+                    found: true,
+                    topic: Some(topic_rec.topic),
+                    definition: Some(topic_rec.definition.clone()),
+                    plain_definition: Some(crate::terminal::render_plain_text(
+                        &topic_rec.definition,
+                    )),
+                    suggestions: Vec::new(),
+                };
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+                return Ok(());
+            }
+
+            let prefix = if term.len() >= 3 { &term[..3] } else { term };
+            let suggestions = if suggest {
+                dict.search_topics_prefix(prefix, 10).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            let resp = DictJson {
+                term: term.to_string(),
+                module: dict_key,
+                found: false,
+                topic: None,
+                definition: None,
+                plain_definition: None,
+                suggestions,
+            };
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            return Ok(());
+        }
+
         // 1. Try exact lookup
         if let Some(topic_rec) = dict.get_topic(term)? {
             let header = format!("📚 {} — Dictionary ({})", topic_rec.topic, dict_key);
@@ -583,6 +887,56 @@ impl CliRunner {
             .ok_or_else(|| MyBibleError::ModuleNotFound(xref_key.clone()))?;
 
         let refs = xref_reader.references_for_verse(parsed.book, parsed.chapter, verse)?;
+
+        if self.cli.json {
+            #[derive(serde::Serialize)]
+            struct XrefItemDto {
+                target: String,
+                book: u16,
+                chapter: u32,
+                verse: u32,
+                votes: Option<i32>,
+                preview: Option<String>,
+            }
+
+            #[derive(serde::Serialize)]
+            struct XrefJson {
+                reference: String,
+                module: String,
+                references: Vec<XrefItemDto>,
+            }
+
+            let active_bible = engine.get_active_bible();
+            let mut dtos = Vec::new();
+            for r in &refs {
+                let mut preview = None;
+                if let Some(b) = &active_bible {
+                    if let Ok(Some(verse_rec)) = b.verse(r.book_to, r.chapter_to, r.verse_to_start)
+                    {
+                        let plain = crate::parsers::verse_text::nodes_to_plain_text(
+                            &crate::parsers::verse_text::parse_verse_text(&verse_rec.text),
+                        );
+                        preview = Some(plain.trim().replace('\n', " "));
+                    }
+                }
+                dtos.push(XrefItemDto {
+                    target: r.format_target(),
+                    book: r.book_to.0,
+                    chapter: r.chapter_to,
+                    verse: r.verse_to_start,
+                    votes: r.votes,
+                    preview,
+                });
+            }
+
+            let resp = XrefJson {
+                reference: format!("{} {}:{}", parsed.book_name, parsed.chapter, verse),
+                module: xref_key,
+                references: dtos,
+            };
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            return Ok(());
+        }
 
         let header = format!(
             "🔗 Cross References for {} {}:{} ({})",
@@ -745,6 +1099,50 @@ impl CliRunner {
             ModulesCommands::List => {
                 let engine = self.init_engine()?;
 
+                if self.cli.json {
+                    let mut b_list: Vec<_> = engine.bibles.keys().cloned().collect();
+                    b_list.sort();
+                    let mut c_list: Vec<_> = engine.commentaries.keys().cloned().collect();
+                    c_list.sort();
+                    let mut d_list: Vec<_> = engine.dictionaries.keys().cloned().collect();
+                    d_list.sort();
+                    let mut x_list: Vec<_> = engine.cross_references.keys().cloned().collect();
+                    x_list.sort();
+                    let mut s_list: Vec<_> = engine.subheadings.keys().cloned().collect();
+                    s_list.sort();
+                    let mut p_list: Vec<_> = engine.reading_plans.keys().cloned().collect();
+                    p_list.sort();
+                    let mut dev_list: Vec<_> = engine.devotions.keys().cloned().collect();
+                    dev_list.sort();
+
+                    #[derive(serde::Serialize)]
+                    struct ModulesJson {
+                        data_dir: String,
+                        total_modules: usize,
+                        bibles: Vec<String>,
+                        commentaries: Vec<String>,
+                        dictionaries: Vec<String>,
+                        cross_references: Vec<String>,
+                        subheadings: Vec<String>,
+                        reading_plans: Vec<String>,
+                        devotions: Vec<String>,
+                    }
+
+                    let resp = ModulesJson {
+                        data_dir: self.data_dir.display().to_string(),
+                        total_modules: engine.total_modules(),
+                        bibles: b_list,
+                        commentaries: c_list,
+                        dictionaries: d_list,
+                        cross_references: x_list,
+                        subheadings: s_list,
+                        reading_plans: p_list,
+                        devotions: dev_list,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    return Ok(());
+                }
+
                 println!("\n📁 Active Data Directory: {}", self.data_dir.display());
                 println!("==================================================");
 
@@ -762,13 +1160,38 @@ impl CliRunner {
 
             ModulesCommands::Search { query, language } => {
                 let client = RepositoryClient::new();
-                println!("Fetching official module registry from repository...");
                 let registry = client.fetch_official_registry()?;
 
                 let mut results: Vec<_> = registry.search(query);
                 if let Some(lang) = language {
                     results.retain(|m| m.language.as_deref() == Some(lang));
                 }
+
+                if self.cli.json {
+                    #[derive(serde::Serialize)]
+                    struct RepoItemDto {
+                        abbreviation: String,
+                        module_type: String,
+                        language: Option<String>,
+                        size_str: Option<String>,
+                        description: String,
+                    }
+
+                    let dtos: Vec<_> = results
+                        .iter()
+                        .map(|m| RepoItemDto {
+                            abbreviation: m.abbreviation.clone(),
+                            module_type: format!("{:?}", m.module_type()),
+                            language: m.language.clone(),
+                            size_str: m.size_str.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&dtos)?);
+                    return Ok(());
+                }
+
+                println!("Fetching official module registry from repository...");
 
                 println!("\nFound {} modules matching '{}':\n", results.len(), query);
                 println!(

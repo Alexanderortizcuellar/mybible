@@ -55,6 +55,16 @@ A fast, memory-safe, and thread-safe Rust engine and CLI tool for the **MyBible*
 - Search over 4,000+ available modules by keyword, language, or type.
 - One-command download, ZIP extraction, and automatic directory placement.
 
+### 🖥️ Native Desktop GUI (PySide6)
+- **Zero-Bloat Native Interface**: Built with lightweight `QTextBrowser` widgets (no heavy Chromium/WebEngine).
+- **Three-Pane Study Workspace**:
+  - Left: Book & chapter navigation tree with testament grouping and chapter counts.
+  - Center: Rich-text Scripture reader with Red Letter words of Jesus, pericope headings, and inline hyperlinks.
+  - Right: Synchronized multi-tab inspector displaying chapter commentaries, cross-references, and full Strong's concordance / dictionary articles.
+- **Interactive Links**: Click footnotes (`[1]`), Strong numbers (`G26`), cross-references (`🔗 Rom 8:28`), and verse references to jump instantly.
+- **Theming & Typography**: Light, Sepia, and Dark reading themes with dynamic font scaling (`Ctrl +` / `Ctrl -`).
+- **Interactive Search & Module Manager**: Dedicated dialogs for multi-translation searching and downloading new modules directly into your active library.
+
 ### ⚡ Thread-Safe Architecture (`Send + Sync`)
 All readers wrap SQLite connections safely in synchronization primitives, making [`MyBibleEngine`](src/engine/manager.rs) fully `Send + Sync`. It is ready to be embedded directly into multi-threaded backends or desktop GUI frameworks such as **Tauri**, **Slint**, or **Iced**.
 
@@ -198,6 +208,33 @@ mybible config set-bible NLT
 mybible config set-commentary ESVstudy
 mybible config set-subheadings KJV-s
 ```
+
+---
+
+## Desktop GUI Application
+
+In addition to the CLI, `mybible` includes a native desktop application in the [`gui/`](gui/) directory powered by **PySide6**. It communicates with the compiled `mybible` engine via non-blocking `QProcess` IPC:
+
+### Prerequisites & Setup
+```bash
+# 1. Ensure the Rust binary is compiled
+cargo build --release
+
+# 2. Install PySide6
+pip install PySide6
+
+# 3. Launch the desktop GUI
+python gui/main.py
+```
+
+### Key Capabilities
+- **Scripture Reader**: Seamlessly jump across all 66 books and chapters with testament categorization, pericope headings, and Red Letter Words of Jesus.
+- **Synchronized Inspector**:
+  - **Commentary**: Chapter-by-chapter and verse-by-verse notes aligned with the active reading.
+  - **Cross-References**: Instant related Scripture references with preview snippets.
+  - **Dictionary / Lexicon**: Look up Strong's concordance numbers (`G26`, `H7225`) or theological terms with click-through navigation.
+- **Interactive Multi-Module Search**: Search across multiple translations simultaneously with full match highlighting and instant verse jumping.
+- **Integrated Module Manager**: View all loaded modules and download new translations, commentaries, or dictionaries from the 4,000+ repository without leaving the application.
 
 ---
 
